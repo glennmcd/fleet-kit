@@ -38,8 +38,11 @@ Thresholds are environment variables: `CONTEXT_ADVISORY_TOKENS` (150000), `CONTE
 On the VM, export `CC_PRACTICES_UNATTENDED=1` where the agents are launched, so the hook processes
 inherit it. Without it, cc-practices blocks `git commit` while the context ceiling allows only
 git/gh and asks for a commit, so a sub-agent past the ceiling can neither work nor hand off. The
-variable also swaps cc-practices' "wait for approval" steps for issue-as-approval and handoffs, and
-turns off its `compactOutput` prompt. Leave it unset on machines where a person is watching.
+variable also swaps cc-practices' "wait for approval" steps for issue-as-approval and handoffs.
+Leave it unset on machines where a person is watching.
+
+Also run `rtk init -g --auto-patch` on the VM. rtk's hook compacts command output on every call and
+leaves the permission decision to Claude Code, so it never waits for a person.
 
 ## Measure first
 

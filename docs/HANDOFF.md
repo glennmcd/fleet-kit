@@ -39,15 +39,16 @@ First written 2026-11-11; updated 2026-11-12. Delete it once the open items belo
 4. **Reviewer (tension 5)**: extend `code-reviewer` with an adversarial mode that gives a verdict at the
    PR head commit, rather than adding a second reviewer.
 5. **Rules to gates (tension 6)**: candidates ruff `S` and `T20`, a duplicate-sentence check.
-6. **Bash hook cost**: with both plugins each Bash call starts four `uv run --script` processes.
-7. **compactOutput unattended**: on the VM use rtk's own hook (`rtk hook claude`) instead, or have
-   compact-output mirror rtk's exit code (0 allow, 3 ask) and run the command unchanged on 3.
+6. **Bash hook cost**: with both plugins each Bash call starts three `uv run --script` processes
+   (four before cc-practices 0.3.0 dropped `compactOutput`).
 
 ## Housekeeping
 
 - Not pushed: cc-practices is 3 commits ahead of origin; fleet-kit has no remote.
 - The installed cc-practices plugin is still 0.1.1 (local scope, commitment-tracker-ai); update it to
-  get 0.2.0.
+  get 0.3.0.
+- rtk: cc-practices 0.3.0 removed `compactOutput`; rtk's own hook (`rtk init -g --auto-patch`) does the
+  rewriting, and session start warns when rtk is installed without it. Run the install on the VM.
 - Temporary worktree `../cta-baseline-tmp` (commitment-tracker-ai) still registered; remove with
   `git worktree remove ../cta-baseline-tmp`.
 - Reference: the "Agent Fleet Field Guide" Claude Doc (claude.ai artifact 8wqP89FKXQt1uJNGrTCSm1) and
