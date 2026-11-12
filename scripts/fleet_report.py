@@ -50,8 +50,11 @@ PRICES: dict[str, float] = {
 }
 CACHE_TTL_SECS = 300
 EXPIRY_WRITE_SHARE = 0.5
+# The share-of-calls column counts contexts at or above this. 150k is context_ceiling's advisory
+# level; its hard ceiling is 200k. The JSON key keeps its name, "over_ceiling_share".
 CEILING_TOKENS = 150_000
 LINE_CAP = 5_000
+SYNTHETIC_MODEL = "<synthetic>"
 
 
 @dataclass
@@ -109,7 +112,9 @@ def _request(record: dict[str, Any], path: str) -> Request | None:
     message = record.get("message")
     usage = message.get("usage") if isinstance(message, dict) else None
     request_id, stamp = record.get("requestId"), record.get("timestamp")
-    if not isinstance(usage, dict) or not request_id or not stamp:
+    if not isinstance(message, dict) or not isinstance(usage, dict) or not request_id or not stamp:
+        return None
+    if message.get("model") == SYNTHETIC_MODEL:  # a reply Claude Code wrote itself; no call
         return None
     write = int(usage.get("cache_creation_input_tokens") or 0)
     split = usage.get("cache_creation")
@@ -358,7 +363,7 @@ WEEK_COLUMNS = [
     ("cache_read_share", "Cache reads", "pct"),
     ("expiry_share", "Cache expiry", "pct"),
     ("median_context", "Median ctx", ""),
-    ("over_ceiling_share", "Over ceiling", "pct"),
+    ("over_ceiling_share", "Ctx >={ceiling}", "pct"),
     ("first_turn_write", "1st-turn write", ""),
 ]
 BRANCH_COLUMNS = [
@@ -370,8 +375,15 @@ BRANCH_COLUMNS = [
 ]
 
 
-def render(weeks: list[dict[str, Any]], branches: list[dict[str, Any]], top: int) -> str:
-    lines = ["## Per week (index: 100 = baseline)", "", *_table(WEEK_COLUMNS, weeks)]
+def render(
+    weeks: list[dict[str, Any]],
+    branches: list[dict[str, Any]],
+    top: int,
+    ceiling: int = CEILING_TOKENS,
+) -> str:
+    label = f"{ceiling // 1000}k" if ceiling % 1000 == 0 else f"{ceiling:,}"
+    columns = [(key, title.format(ceiling=label), kind) for key, title, kind in WEEK_COLUMNS]
+    lines = ["## Per week (index: 100 = baseline)", "", *_table(columns, weeks)]
     lines += ["", f"## Top {top} branches by weighted tokens", ""]
     lines += _table(BRANCH_COLUMNS, branches[:top])
     return "\n".join(lines)
@@ -384,7 +396,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--since", help="YYYY-MM-DD; ignore earlier calls")
     parser.add_argument("--prs", help="JSON from gh pr list --state merged --json ...")
     parser.add_argument("--baseline", default="", help="comma-separated ISO weeks, e.g. 2026-W45")
-    parser.add_argument("--ceiling", type=int, default=CEILING_TOKENS)
+    parser.add_argument(
+        "--ceiling",
+        type=int,
+        default=CEILING_TOKENS,
+        help="context size for the share-of-calls column (default: the hook's 150k advisory)",
+    )
     parser.add_argument("--ttl", type=int, default=CACHE_TTL_SECS, help="cache lifetime, seconds")
     parser.add_argument("--line-cap", type=int, default=LINE_CAP)
     parser.add_argument("--top", type=int, default=10)
@@ -418,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps({"baseline": baseline, "weeks": weeks, "branches": branches}, indent=2))
     else:
-        print(render(weeks, branches, args.top))
+        print(render(weeks, branches, args.top, args.ceiling))
     return 0
 
 

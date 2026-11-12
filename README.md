@@ -57,7 +57,9 @@ How to read it:
 - **Per line idx** is the headline: splitting work into smaller PRs cannot fake it.
 - **Cache expiry** = price-weighted cost of re-writing a cache that died while the agent idled. Marquardt
   found 31% here; the wait cap took it to under 1%.
-- **Median ctx / Over ceiling** show whether agents carry too much. His median fell 218k to 101k.
+- **Median ctx / Ctx >=150k** show whether agents carry too much. The second is the share of calls at
+  or above `--ceiling`, which defaults to the hook's 150k advisory level, not its 200k hard ceiling. His
+  median fell 218k to 101k.
 - **1st-turn write** large and growing = something injected after the cache breakpoint (a long
   CLAUDE.md or memory file) is breaking reuse across agents.
 - Divide by work, not by hour. Note which changes landed in the same week; you cannot separate them.

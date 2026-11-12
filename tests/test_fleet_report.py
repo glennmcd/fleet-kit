@@ -87,6 +87,16 @@ class ReadRequests(Fixture):
         flags = {r.request_id: r.is_subagent for r in fr.read_requests([main, sub])}
         self.assertEqual(flags, {"m": False, "s": True})
 
+    def test_synthetic_records_are_not_calls(self) -> None:
+        # Claude Code writes `<synthetic>` assistant records (zero usage) for replies no model made.
+        # Today they carry no requestId; skip them by model too, so they never count as a call or a
+        # zero-write first turn.
+        fake = record("syn", "2026-11-10T09:59:00Z")
+        fake["message"]["model"] = "<synthetic>"
+        real = record("r1", "2026-11-10T10:00:00Z", read=100, write=50)
+        requests = fr.read_requests([self.write("p/s.jsonl", [fake, real])])
+        self.assertEqual([r.request_id for r in requests], ["r1"])
+
 
 class Weighting(unittest.TestCase):
     def test_prices_apply_per_kind(self) -> None:
@@ -238,6 +248,17 @@ class Report(Fixture):
         with redirect_stdout(out):
             fr.main(["--root", str(self.root), "--json", "--price", "output=4"])
         self.assertEqual(json.loads(out.getvalue())["weeks"][0]["weighted"], 33_600 - 200)
+
+    def test_cli_names_the_context_threshold(self) -> None:
+        # The share column counts calls at or over --ceiling (default 150k, the hook's advisory
+        # level), not the 200k hard ceiling; its header says which.
+        self.build()
+        for args, header in (([], "Ctx >=150k"), (["--ceiling", "200000"], "Ctx >=200k")):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                fr.main(["--root", str(self.root), *args])
+            self.assertIn(f"| {header} |", out.getvalue())
+            self.assertNotIn("Over ceiling", out.getvalue())
 
     def test_cli_with_no_transcripts_fails_cleanly(self) -> None:
         empty = os.path.join(self._tmp.name, "empty")
