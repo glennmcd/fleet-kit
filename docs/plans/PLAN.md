@@ -3,7 +3,7 @@
 What is left of the roadmap in the README, rebuilding Marquardt's agent-fleet building blocks round by
 round. fleet-kit holds what only a fleet needs (token hooks, measurement, CI gates, control plane);
 cc-practices holds the general practices (rules, skills, reviewer, templates). Its plan, including the
-rules layer of round 2 and the reviewer of round 4, is `cc-practices-plugin/docs/PLAN.md`.
+rules layer of round 2 and the reviewer of round 4, is `cc-practices-plugin/docs/plans/PLAN.md`.
 
 Round 1 is done: `context_ceiling` and `wait_cap` hooks, `session_tokens.py`, `fleet_report.py`, and a
 baseline on commitment-tracker-ai (branch `docs/token-baseline`). Compare every change below against it.

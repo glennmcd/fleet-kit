@@ -30,5 +30,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
 strict = true
-files = ["scripts/fleet_report.py", "tests/test_fleet_report.py", "tests/test_plugin.py"]
+files = [
+  "scripts/fleet_report.py",
+  "scripts/first_context.py",
+  "tests/test_fleet_report.py",
+  "tests/test_first_context.py",
+  "tests/test_plugin.py",
+]
 mypy_path = "scripts"

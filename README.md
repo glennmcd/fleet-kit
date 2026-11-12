@@ -16,6 +16,7 @@ installed from a directory marketplace (same setup as `cc-practices-plugin`).
 | `hooks/context_ceiling.py` | `PreToolUse`: a sub-agent past 150k tokens of context is told to hand off at its next commit; past 200k only `git`/`gh` run | agent-fleet-kit, vendored |
 | `hooks/wait_cap.py` | `PreToolUse` on Bash: a sub-agent may not wait in the foreground past the 5-minute prompt cache (270 s cap) | agent-fleet-kit, vendored |
 | `scripts/session_tokens.py` | Tokens per session, one count per request | agent-fleet-kit, vendored |
+| `scripts/first_context.py` | What a session's first model call carried (system prompt, SessionStart output, CLAUDE.md, skill and tool listings), part by part, largest first | new |
 | `scripts/fleet_report.py` | Tokens per ISO week, per merged PR and per changed line, price-weighted, as an index against a baseline; cache-expiry share, context distribution, first-turn cost, top branches | new |
 
 Both hooks judge sub-agents only and fail open. The vendored files are unchanged apart from a
@@ -66,6 +67,24 @@ How to read it:
 - **1st-turn write** large and growing = something injected after the cache breakpoint (a long
   CLAUDE.md or memory file) is breaking reuse across agents.
 - Divide by work, not by hour. Note which changes landed in the same week; you cannot separate them.
+
+### See what a new session starts with
+
+Start a session, send one prompt, then:
+
+```bash
+uv run --script scripts/first_context.py --project commitment-tracker-ai
+uv run --script scripts/first_context.py --project commitment-tracker-ai --show SessionStart
+```
+
+The first prints each part of the first call's context with its size; `--show` prints the text of the
+parts whose name matches (here, cc-practices' core rules). Tool definitions are not recorded, so the total
+is lower than the 1st-turn tokens in `fleet_report.py`. To preview cc-practices' part without a session,
+run its hook directly from the project folder:
+
+```bash
+echo {} | uv run --script ../cc-practices-plugin/hooks/practices.py session-start
+```
 
 Transcripts live in `~/.claude/projects/` and hold every file and command output the agent saw:
 treat them, and this report's branch names, as sensitive.
