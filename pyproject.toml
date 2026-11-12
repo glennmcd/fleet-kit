@@ -1,0 +1,34 @@
+[project]
+name = "fleet-kit"
+version = "0.1.0"
+description = "Development tooling for the fleet-kit Claude Code plugin (hooks, token report, tests)"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["hooks", "scripts"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["hooks/context_ceiling.py", "hooks/wait_cap.py", "scripts/session_tokens.py", "tests/test_vendored_kit.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+strict = true
+files = ["scripts/fleet_report.py", "tests/test_fleet_report.py", "tests/test_plugin.py"]
+mypy_path = "scripts"

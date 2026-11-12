@@ -1,0 +1,26 @@
+{
+  "description": "fleet-kit: end sub-agents at a context ceiling; never let a sub-agent's prompt cache expire while it waits",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script \"${CLAUDE_PLUGIN_ROOT}/hooks/context_ceiling.py\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script \"${CLAUDE_PLUGIN_ROOT}/hooks/wait_cap.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
