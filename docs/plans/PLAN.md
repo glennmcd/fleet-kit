@@ -53,10 +53,14 @@ commitment-tracker-ai, and the reviewer still shares the author's token.
 
 - VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2).
 - One clone per agent.
-- Write-outside-clone hook: block edits outside the agent's own clone.
+- Write-outside-clone hook: block edits outside the agent's own clone. Built: `hooks/write_guard.py`.
 - Slot and lane allocator: which agent works on what, so two agents never touch the same files.
 - Watchdog: notice stalled or looping agents and stop them.
-- Stop the line: one switch that halts every agent.
+- Stop the line: one switch that halts every agent. Built: `hooks/stop_line.py` and `scripts/fleet_stop.py`.
+
+Decided (2026-11-13): a Linux VM, local first and then cloud; an OS user per agent as the boundary, with the hooks
+for clear refusals; headless `claude -p` under one systemd unit per slot. Order: stop switch and write guard,
+then clones and the allocator, then the watchdog, then the VM setup. See `docs/control-plane.md`.
 
 *Done when*: about a dozen agents run on the VM with `CC_PRACTICES_UNATTENDED=1` and rtk's hook, each in
 its own clone, and the watchdog and stop switch have been exercised.
