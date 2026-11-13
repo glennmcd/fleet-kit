@@ -14,16 +14,13 @@ jobs:
   gates:
     permissions:
       contents: read
-    uses: glennmcd/fleet-kit/.github/workflows/gates.yml@<commit sha>
+    uses: glennmcd/fleet-kit/.github/workflows/gates.yml@<commit sha> # v0.2.0
     with:
       kit-ref: <the same commit sha>        # must be a full SHA; the workflow refuses anything else
-    secrets:
-      kit-token: ${{ secrets.FLEET_KIT_TOKEN }}   # only while fleet-kit is private
 ```
 
-While fleet-kit is a private repository, two things are needed: allow access under fleet-kit's
-Settings > Actions > General > Access, and give the caller a read-only token for fleet-kit as `FLEET_KIT_TOKEN`
-(the default token only reaches the calling repository). Neither is needed once it is public.
+fleet-kit is public, so no token is needed. A private fork can pass a read-only token for it as the
+`kit-token` secret, and must allow access under its Settings > Actions > General > Access.
 
 On a pull request every gate runs; on a push only the whole-tree gates (`silent_skips`, `file_size`,
 `duplication`) run, since the diff gates already judged the change. Mark the `gates` job as a required check.

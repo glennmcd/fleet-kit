@@ -6,8 +6,6 @@ name: gates
 #     uses: glennmcd/fleet-kit/.github/workflows/gates.yml@<commit sha>
 #     with:
 #       kit-ref: <the same commit sha>
-#     secrets:
-#       kit-token: ${{ secrets.FLEET_KIT_TOKEN }}   # only while fleet-kit is a private repository
 #
 # The gate scripts are standard-library Python. Settings live in the caller's `.fleet-gates.json`; see
 # docs/gates.md. Every step runs even when an earlier one fails, so one run reports every gate.
@@ -26,7 +24,7 @@ on:
         type: string
     secrets:
       kit-token:
-        description: Read-only token for fleet-kit, needed only while it is private.
+        description: Read-only token for fleet-kit, needed only when the kit is a private fork.
         required: false
 
 permissions:

@@ -37,8 +37,8 @@ Built: six gates plus a ratchet that refuses to loosen them (the evasion kit is 
 `tests/test_evasion_*.py`), run by `.github/workflows/gates.yml`; see `docs/gates.md`. commitment-tracker-ai
 calls it from `feat/ci-gates`.
 
-*Open*: fleet-kit is private, so callers need a read-only token (`FLEET_KIT_TOKEN`) and fleet-kit needs
-Actions access enabled for the caller; the gates cannot find a renamed-variable copy.
+*Open*: the gates cannot find a renamed-variable copy. A public repository cannot call a private repo's
+reusable workflow, which is why fleet-kit is public (main and tags are protected by rulesets).
 
 ## Round 4: review and issues (fleet part)
 
