@@ -27,7 +27,7 @@ Both hooks judge sub-agents only and fail open. The vendored files are unchanged
 Requires `uv` on `PATH` (the hooks run with `uv run --script`, standard library only).
 
 ```bash
-claude plugin marketplace add C:/Users/glenn/Documents/git/fleet-kit      # or the VM path
+claude plugin marketplace add <path-to-your-fleet-kit-clone>      # e.g. ~/src/fleet-kit, or the VM path
 claude plugin install fleet-kit@fleet-kit --scope local
 ```
 
