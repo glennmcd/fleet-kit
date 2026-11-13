@@ -58,4 +58,3 @@ its own clone, and the watchdog and stop switch have been exercised.
 ## Also open
 
 - Hook cost: with cc-practices installed, each Bash call starts three `uv run --script` processes.
-- fleet-kit has no remote yet.
