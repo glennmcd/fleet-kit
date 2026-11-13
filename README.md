@@ -107,3 +107,19 @@ uv run pytest            # or: python3 -m unittest discover tests
 uv run ruff check . && uv run mypy
 claude plugin validate .
 ```
+
+## Round 3: CI gates
+
+Six checks every agent PR must pass, run as one reusable GitHub Actions workflow
+([`gates.yml`](.github/workflows/gates.yml)). Each is a standard-library Python script in
+[`scripts/gates/`](scripts/gates), configured by a `.fleet-gates.json` in the calling repository, and each
+has an evasion kit in `tests/test_evasion_*.py`. Details, config and how to call it: [docs/gates.md](docs/gates.md).
+
+| Gate | Fails when |
+|---|---|
+| `silent_skips` | a test is skipped, marked expected-to-fail or focused (`.only`) without naming an issue |
+| `audit_greps` | a line the PR adds silences a warning (`# type: ignore`, `# noqa`, `@ts-ignore`, `eslint-disable`, bare `except:`) or matches a repo rule, without an issue |
+| `file_size` | a source file passes the line cap (800) or its recorded exception ceiling |
+| `obligations` | a change to X lacks the change to Y that the repo says it owes |
+| `duplication` | a block of 8+ significant lines is copied from elsewhere, beyond the recorded baseline |
+| `ratchet` | a PR loosens any of the above: a higher cap, a new exception, a removed rule, a larger baseline |

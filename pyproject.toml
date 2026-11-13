@@ -36,5 +36,19 @@ files = [
   "tests/test_fleet_report.py",
   "tests/test_first_context.py",
   "tests/test_plugin.py",
+  "scripts/gates",
+  "tests/test_evasion_kit.py",
+  "tests/test_evasion_silent_skips.py",
+  "tests/test_evasion_audit_greps.py",
+  "tests/test_evasion_file_size.py",
+  "tests/test_evasion_obligations.py",
+  "tests/test_evasion_duplication.py",
+  "tests/test_evasion_ratchet.py",
 ]
 mypy_path = "scripts"
+
+[tool.ruff.lint.per-file-ignores]
+# The evasion kits hold long one-line code samples as data.
+"tests/test_evasion_*.py" = ["E501"]
+# The module docstrings are the gates' documentation and run to 120 columns.
+"scripts/gates/*.py" = ["E501"]

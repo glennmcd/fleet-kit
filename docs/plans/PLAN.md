@@ -33,8 +33,12 @@ Checks every agent PR must pass, each citing the incident that caused it:
 - Change obligations: a change to X must also change Y (for example, a migration with its model).
 - Gate evasion kit: tests that try to slip past each gate, so a weakened gate is caught.
 
-*Done when*: the gates run as reusable GitHub Actions workflows (actions pinned to a SHA,
-least-privilege `permissions`) and commitment-tracker-ai uses them.
+Built: six gates plus a ratchet that refuses to loosen them (the evasion kit is each gate's
+`tests/test_evasion_*.py`), run by `.github/workflows/gates.yml`; see `docs/gates.md`. commitment-tracker-ai
+calls it from `feat/ci-gates`.
+
+*Open*: fleet-kit is private, so callers need a read-only token (`FLEET_KIT_TOKEN`) and fleet-kit needs
+Actions access enabled for the caller; the gates cannot find a renamed-variable copy.
 
 ## Round 4: review and issues (fleet part)
 

@@ -1,0 +1,82 @@
+name: gates
+
+# Reusable workflow: the fleet-kit CI gates. A repository calls it from its own CI:
+#
+#   gates:
+#     uses: glennmcd/fleet-kit/.github/workflows/gates.yml@<commit sha>
+#     with:
+#       kit-ref: <the same commit sha>
+#     secrets:
+#       kit-token: ${{ secrets.FLEET_KIT_TOKEN }}   # only while fleet-kit is a private repository
+#
+# The gate scripts are standard-library Python. Settings live in the caller's `.fleet-gates.json`; see
+# docs/gates.md. Every step runs even when an earlier one fails, so one run reports every gate.
+
+on:
+  workflow_call:
+    inputs:
+      kit-ref:
+        description: Commit SHA of fleet-kit to take the gate scripts from (use the SHA this workflow is called at).
+        required: true
+        type: string
+      config-path:
+        description: Gate settings file in the calling repository.
+        required: false
+        default: .fleet-gates.json
+        type: string
+    secrets:
+      kit-token:
+        description: Read-only token for fleet-kit, needed only while it is private.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .fleet-kit/scripts
+      KIT_REF: ${{ inputs.kit-ref }}
+      CONFIG: ${{ inputs.config-path }}
+      # A pull request's base commit; empty on a push, when the diff gates were already run on the PR.
+      BASE: ${{ github.event.pull_request.base.sha }}
+    steps:
+      # Actions are pinned to a commit; update the SHA and the tag comment together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse an unpinned kit-ref
+        run: |
+          [[ "$KIT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "kit-ref must be a full commit SHA, got: $KIT_REF"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: glennmcd/fleet-kit
+          ref: ${{ inputs.kit-ref }}
+          path: .fleet-kit
+          token: ${{ secrets.kit-token || github.token }}
+          persist-credentials: false
+      - name: Settings file exists
+        run: |
+          test -f "$CONFIG" || { echo "$CONFIG not found, add the gate settings"; exit 1; }
+
+      - name: No silent skips
+        if: ${{ !cancelled() }}
+        run: python3 -m gates.silent_skips --root . --config "$CONFIG"
+      - name: File size
+        if: ${{ !cancelled() }}
+        run: python3 -m gates.file_size --root . --config "$CONFIG"
+      - name: Copy-paste
+        if: ${{ !cancelled() }}
+        run: python3 -m gates.duplication --root . --config "$CONFIG"
+      - name: Audit greps (lines this pull request adds)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        run: python3 -m gates.audit_greps --root . --config "$CONFIG" --base "$BASE"
+      - name: Change obligations
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        run: python3 -m gates.obligations --root . --config "$CONFIG" --base "$BASE"
+      - name: Gates not loosened
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        run: python3 -m gates.ratchet --root . --config "$CONFIG" --base "$BASE"
