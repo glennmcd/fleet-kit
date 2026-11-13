@@ -22,7 +22,7 @@ from the CLI. The skill listing is capped at about 30k characters: parking the 2
 `product-management`) took the freed room. Listing the skills the VM installs, and keeping claude.ai
 sync off it, moved to round 5, since there is no VM setup yet.
 
-## Round 3: CI gates
+## Round 3: CI gates: done
 
 Checks every agent PR must pass, each citing the incident that caused it:
 
@@ -35,7 +35,7 @@ Checks every agent PR must pass, each citing the incident that caused it:
 
 Built: six gates plus a ratchet that refuses to loosen them (the evasion kit is each gate's
 `tests/test_evasion_*.py`), run by `.github/workflows/gates.yml`; see `docs/gates.md`. commitment-tracker-ai
-calls it from `feat/ci-gates`.
+calls it (merged in PR 30; `gates / gates` is a required check on main).
 
 *Open*: the gates cannot find a renamed-variable copy. A public repository cannot call a private repo's
 reusable workflow, which is why fleet-kit is public (main and tags are protected by rulesets).
