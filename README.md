@@ -137,5 +137,8 @@ mode and the posting helper) is in cc-practices.
 Two hooks that protect against the rest, built first: [`stop_line.py`](hooks/stop_line.py) refuses every tool
 call while one flag file exists (`scripts/fleet_stop.py stop`), and [`write_guard.py`](hooks/write_guard.py)
 refuses writes outside the agent's own clone. Both act only on a fleet agent (`FLEET_CLONE` set), so installing
-the plugin on a desktop changes nothing. The design (hooks for clear refusals, an OS user per agent for the
+the plugin on a desktop changes nothing. A slot is an OS user with one clone:
+[`fleet_slot.py`](scripts/fleet_slot.py) creates it, and the template unit
+[`fleet-agent@.service`](systemd/fleet-agent@.service) runs [`fleet_agent.py`](scripts/fleet_agent.py), which
+starts a headless agent on the slot's assigned issue. The design (hooks for clear refusals, an OS user per agent for the
 boundary that holds) and what the write guard cannot see: [docs/control-plane.md](docs/control-plane.md).

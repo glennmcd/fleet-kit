@@ -55,7 +55,9 @@ and remove the shared login.
 
 - VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2), and gives the
   reviewer its own GitHub account (from round 4).
-- One clone per agent, with a service unit per slot.
+- One clone per agent, with a service unit per slot. Built: `scripts/fleet_slot.py`, `scripts/fleet_agent.py`
+  and `systemd/fleet-agent@.service`. Not yet run on a real machine: `systemd-analyze verify` and one slot's
+  first run are the operator's.
 - Write-outside-clone hook: block edits outside the agent's own clone. Built in v0.4.0: `hooks/write_guard.py`.
 - Slot and lane allocator: which agent works on what, so two agents never touch the same files. Lanes are
   weighted, and two thirds of the slots are kept for work already in flight (open PRs and their fix rounds).

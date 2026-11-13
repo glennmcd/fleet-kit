@@ -1,8 +1,8 @@
 # Control plane (round 5)
 
 What runs a dozen agents on one Linux machine without them trampling each other, and lets one person stop
-them. This page covers the first two pieces, which protect against the rest: the stop switch and the
-write guard. The clones, the allocator, the watchdog and the VM setup follow.
+them. This page covers what is built: the stop switch and the write guard, which protect against the rest,
+and the slot (an OS user, its clone and its service unit). The allocator, the watchdog and the VM setup follow.
 
 The design is two layers. **Hooks** give an agent a clear refusal and keep it from making honest mistakes.
 **The agent's OS user** is the boundary that holds: each agent runs as its own user, and that user can write
@@ -16,6 +16,8 @@ The agent's service unit sets these. On a desktop where they are unset, the hook
 | Variable | Meaning |
 |---|---|
 | `FLEET_CLONE` | the agent's own clone. Turns on the write guard and the stop switch |
+| `FLEET_SLOT` | the slot's name, `agentNN`; the same as the OS user |
+| `FLEET_SLOTS_DIR` | where assignments are read from; default `/var/lib/fleet/slots` |
 | `FLEET_STOP_FILE` | the stop flag file; default `/var/lib/fleet/STOP` |
 | `FLEET_ALLOW_WRITE` | extra writable directories, separated by `:` (for example a shared cache) |
 
@@ -64,12 +66,54 @@ These are allowed, on purpose, and written down as tests (`KNOWN LIMIT` in
 
 ## OS user per agent (what holds)
 
-One user per slot, for example `agent01`, with the clone in its home and nothing else it can write.
+One user per slot, named `agentNN`, with the clone in its home (`/home/agent01/repo`) and nothing else it can
+write. [`scripts/fleet_slot.py`](../scripts/fleet_slot.py) sets a slot up:
 
 ```bash
-sudo useradd --create-home agent01
-sudo install -d -o root -g root -m 755 /var/lib/fleet      # the stop file's directory: agents read, root writes
+uv run scripts/fleet_slot.py add agent01 --repo https://github.com/owner/name.git           # prints what it would do
+sudo uv run scripts/fleet_slot.py add agent01 --repo https://github.com/owner/name.git --apply
 ```
 
-The slot's service unit sets `User=agent01`, `Environment=FLEET_CLONE=/home/agent01/repo`, and runs the
-headless agent. That unit, the clone setup and the allocator are the next pieces.
+Without `--apply` it only prints the commands and the unit. With it, as root, it creates `/var/lib/fleet`
+(agents read, root writes), the user and the clone, sets the clone to push with the token from the unit's
+environment, and installs the unit. It runs no shell, stops at the first failure, and keeps a user or clone
+that already exists. `--kit` says where fleet-kit is installed on the machine (default `/opt/fleet-kit`).
+
+The operator writes the secrets once, by hand. They are never in the repository or the unit:
+
+```bash
+sudo install -m 600 -o root -g root /dev/null /etc/fleet/agent.env
+sudoedit /etc/fleet/agent.env       # ANTHROPIC_API_KEY=... and GH_TOKEN=...
+```
+
+Not set up here yet (the VM setup will do it): `uv`, `claude`, `gh` and `rtk` on the machine, and this plugin
+and cc-practices installed for each slot's user. Without the plugin installed for that user, the hooks do not run.
+
+## The slot's service unit
+
+[`systemd/fleet-agent@.service`](../systemd/fleet-agent@.service) is a template: `fleet-agent@agent01` runs as
+the user `agent01` in `/home/agent01/repo`. Both come from the one instance name, so a unit cannot run one
+slot's agent in another slot's clone. It sets `FLEET_CLONE`, `FLEET_SLOT` and `CC_PRACTICES_UNATTENDED=1`,
+reads the secrets from `/etc/fleet/agent.env`, and lets the process write only its home and a private `/tmp`
+(`ProtectSystem=strict`). It does not restart: one run is one assignment.
+
+```bash
+echo 12 | sudo tee /var/lib/fleet/slots/agent01      # assign issue 12 (the allocator will do this)
+sudo systemctl start fleet-agent@agent01
+journalctl -u fleet-agent@agent01 -f
+sudo systemctl stop 'fleet-agent@*'                  # with fleet_stop.py stop, ends every agent
+```
+
+The unit runs [`scripts/fleet_agent.py`](../scripts/fleet_agent.py), which checks before it starts an agent:
+
+| Check | If it fails |
+|---|---|
+| the stop flag is absent | exit 75; nothing starts while the fleet is stopped |
+| the assignment file holds one issue number | no file: idle, exit 0. Anything else: exit 65 |
+| the clone has no uncommitted changes | exit 70. It is left as it is for a person to look at |
+| `git fetch` and the switch to `issue/<n>` work | exit 70 |
+
+The branch is the local `issue/<n>` if the clone has it, the pushed one if another slot started it, else a new
+one from `origin/main`. Then the script becomes `claude -p` with a fixed prompt that names the issue, so systemd
+watches the agent itself. The agent runs with `--dangerously-skip-permissions`: nobody is there to answer a
+prompt, and the limits are the OS user, the unit's sandbox and the two hooks.
