@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from pathlib import Path
 
-    config = load_config(Path(args.root).resolve(), args.config)
+    config = load_config(Path(args.root).resolve(), args.config, required=True)
     decision = run(args.repo, args.pr, config)
     print(f"verdict: {decision.conclusion}: {decision.summary}")
     return 0

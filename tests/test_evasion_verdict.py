@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -112,6 +113,19 @@ def test_an_unlisted_author_cannot_override_the_reviewer() -> None:
 
 def test_no_reviewers_configured_fails_closed() -> None:
     assert not passes(comment(marker()), reviewers=[])
+
+
+def test_a_missing_config_file_is_an_error_not_an_empty_config(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="not found"):
+        verdict.main(["--repo", "o/r", "--pr", "1", "--root", str(tmp_path)])
+    with pytest.raises(SystemExit, match="not found"):
+        verdict.main(["--repo", "o/r", "--pr", "1", "--root", str(tmp_path), "--config", "x.json"])
+
+
+def test_a_config_that_is_not_json_is_an_error(tmp_path: Path) -> None:
+    (tmp_path / ".fleet-gates.json").write_text("{nope", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not valid JSON"):
+        verdict.main(["--repo", "o/r", "--pr", "1", "--root", str(tmp_path)])
 
 
 # --- the SHA must be the full head SHA

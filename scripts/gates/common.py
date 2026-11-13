@@ -65,13 +65,20 @@ def matches(path: str, patterns: Iterable[str]) -> bool:
     return any(glob_to_regex(p).match(path) for p in patterns)
 
 
-def load_config(root: Path, config: str | None = None) -> dict[str, Any]:
+def load_config(root: Path, config: str | None = None, *, required: bool = False) -> dict[str, Any]:
+    """The gates' settings. A missing file means defaults, unless `required`: then it is an error,
+    because a check that needs its settings (the verdict's reviewers) must not run on none."""
     file = Path(config) if config else root / CONFIG_NAME
     if not file.is_absolute() and config:
         file = root / file
     if not file.exists():
+        if required:
+            raise SystemExit(f"{file}: config file not found")
         return {}
-    data = json.loads(file.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"{file}: not valid JSON ({error})") from error
     if not isinstance(data, dict):
         raise SystemExit(f"{file}: expected a JSON object")
     return data
