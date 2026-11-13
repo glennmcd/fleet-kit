@@ -1,6 +1,6 @@
 {
   "name": "fleet-kit",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Building blocks for running a fleet of Claude Code agents cheaply and safely: context-ceiling and wait-cap hooks, plus a per-unit-of-work token report. Rebuilt from Alexander Marquardt's articles and agent-fleet-kit.",
   "author": { "name": "Glenn McDonald" },
   "license": "MIT",

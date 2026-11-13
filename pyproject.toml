@@ -1,6 +1,6 @@
 [project]
 name = "fleet-kit"
-version = "0.1.0"
+version = "0.4.0"
 description = "Development tooling for the fleet-kit Claude Code plugin (hooks, token report, tests)"
 requires-python = ">=3.12"
 dependencies = []

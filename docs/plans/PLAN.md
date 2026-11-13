@@ -46,25 +46,36 @@ reusable workflow, which is why fleet-kit is public (main and tags are protected
   the reviewer (cc-practices) posts, that passes only for an approval of the PR's current head commit. A push after
   approval resets it. Release-please PRs are exempt by branch prefix. Built in fleet-kit v0.3.0; see `docs/verdict.md`.
 
-*Done when*: a PR cannot merge without a reviewer verdict on its head SHA. Open: the check is not yet required in
-commitment-tracker-ai, and the reviewer still shares the author's token.
+*Done when*: a PR cannot merge without a reviewer verdict on its head SHA. `reviewer-verdict` is a required check
+on commitment-tracker-ai's main. Open: the reviewer still shares the author's token. Decided (2026-11-13): the
+reviewer gets its own GitHub account, `g26work`, set up with the VM (round 5); then list it in `verdict.reviewers`
+and remove the shared login.
 
 ## Round 5: control plane (VM)
 
-- VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2).
-- One clone per agent.
-- Write-outside-clone hook: block edits outside the agent's own clone. Built: `hooks/write_guard.py`.
-- Slot and lane allocator: which agent works on what, so two agents never touch the same files.
-- Watchdog: notice stalled or looping agents and stop them.
-- Stop the line: one switch that halts every agent. Built: `hooks/stop_line.py` and `scripts/fleet_stop.py`.
+- VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2), and gives the
+  reviewer its own GitHub account (from round 4).
+- One clone per agent, with a service unit per slot.
+- Write-outside-clone hook: block edits outside the agent's own clone. Built in v0.4.0: `hooks/write_guard.py`.
+- Slot and lane allocator: which agent works on what, so two agents never touch the same files. Lanes are
+  weighted, and two thirds of the slots are kept for work already in flight (open PRs and their fix rounds).
+- Watchdog: a timer job with no AI that checks for stalled agents, a red main, stuck PRs and failed units, and
+  logs each run as caught, clean or missed. A red main sets the stop flag.
+- Stop the line: one switch that halts every agent. Built in v0.4.0: `hooks/stop_line.py` and
+  `scripts/fleet_stop.py`.
 
-Decided (2026-11-13): a Linux VM, local first and then cloud; an OS user per agent as the boundary, with the hooks
-for clear refusals; headless `claude -p` under one systemd unit per slot. Order: stop switch and write guard,
-then clones and the allocator, then the watchdog, then the VM setup. See `docs/control-plane.md`.
+Decided (2026-11-13): a Linux machine reached over SSH first (one already runs), then a cloud VM; an OS user per
+agent as the boundary, with the hooks for clear refusals; headless `claude -p` under one systemd unit per slot.
+The work queue is GitHub issues written from cc-practices' agent-ready template, with one label per lane. Order:
+stop switch and write guard, then clones and the slot unit, then the allocator, then the watchdog, then the VM
+setup. See `docs/control-plane.md`.
 
 *Done when*: about a dozen agents run on the VM with `CC_PRACTICES_UNATTENDED=1` and rtk's hook, each in
-its own clone, and the watchdog and stop switch have been exercised.
+its own clone, the watchdog and stop switch have been exercised, and `fleet_report.py` has been compared with the
+round 1 baseline.
 
 ## Also open
 
-- Hook cost: with cc-practices installed, each Bash call starts three `uv run --script` processes.
+- Hook cost: fleet-kit alone now starts four `uv run --script` processes on each Bash call (stop line, write
+  guard, context ceiling, wait cap), before cc-practices' own. Measure it and consider one dispatcher before a
+  dozen agents run.
