@@ -42,10 +42,12 @@ reusable workflow, which is why fleet-kit is public (main and tags are protected
 
 ## Round 4: review and issues (fleet part)
 
-- Verdict-at-head merge check: a required status check that passes only when the adversarial
-  reviewer (cc-practices) approved the PR's current head commit. A push after approval resets it.
+- Verdict-at-head merge check: a `reviewer-verdict` check run, published by `verdict.yml` from a marker comment
+  the reviewer (cc-practices) posts, that passes only for an approval of the PR's current head commit. A push after
+  approval resets it. Release-please PRs are exempt by branch prefix. Built in fleet-kit v0.3.0; see `docs/verdict.md`.
 
-*Done when*: a PR cannot merge without a reviewer verdict on its head SHA.
+*Done when*: a PR cannot merge without a reviewer verdict on its head SHA. Open: the check is not yet required in
+commitment-tracker-ai, and the reviewer still shares the author's token.
 
 ## Round 5: control plane (VM)
 

@@ -44,11 +44,12 @@ files = [
   "tests/test_evasion_obligations.py",
   "tests/test_evasion_duplication.py",
   "tests/test_evasion_ratchet.py",
+  "tests/test_evasion_verdict.py",
 ]
 mypy_path = "scripts"
 
 [tool.ruff.lint.per-file-ignores]
 # The evasion kits hold long one-line code samples as data.
-"tests/test_evasion_*.py" = ["E501"]
+"tests/test_evasion_*.py" = ["E501", "UP031"]
 # The module docstrings are the gates' documentation and run to 120 columns.
 "scripts/gates/*.py" = ["E501"]

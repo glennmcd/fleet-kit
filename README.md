@@ -123,3 +123,11 @@ has an evasion kit in `tests/test_evasion_*.py`. Details, config and how to call
 | `obligations` | a change to X lacks the change to Y that the repo says it owes |
 | `duplication` | a block of 8+ significant lines is copied from elsewhere, beyond the recorded baseline |
 | `ratchet` | a PR loosens any of the above: a higher cap, a new exception, a removed rule, a larger baseline |
+| `verdict` | a PR's head commit has no reviewer approval (round 4; see below) |
+
+## Round 4: verdict at head
+
+A pull request merges only when the reviewer approved its current head commit. [`verdict.yml`](.github/workflows/verdict.yml)
+publishes a `reviewer-verdict` check run from a marker comment the reviewer posts; a push resets it. The contract,
+calling it, and what it does not guarantee: [docs/verdict.md](docs/verdict.md). The reviewer side (the adversarial
+mode and the posting helper) is in cc-practices.

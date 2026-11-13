@@ -1,0 +1,78 @@
+name: verdict
+
+# Reusable workflow: publishes the `reviewer-verdict` check run on a pull request's head commit. It passes only
+# when the reviewer approved that exact commit (see docs/verdict.md). A repository calls it like this:
+#
+#   verdict:
+#     if: github.event_name == 'pull_request' || github.event.issue.pull_request
+#     permissions:
+#       contents: read
+#       checks: write
+#       pull-requests: read
+#       issues: read
+#     uses: glennmcd/fleet-kit/.github/workflows/verdict.yml@<commit sha> # <tag>
+#     with:
+#       kit-ref: <the same commit sha>
+#
+# with the caller triggered on `pull_request` (opened, synchronize, reopened, ready_for_review,
+# converted_to_draft) and `issue_comment` (created).
+#
+# Security: this runs with a write token and, for comments, in the default branch's context. It therefore
+# never checks out or runs the pull request's code, reads the comments only through the API, and takes the
+# default branch's `.fleet-gates.json`, so a pull request cannot change who may review it.
+
+on:
+  workflow_call:
+    inputs:
+      kit-ref:
+        description: Commit SHA of fleet-kit to take the gate scripts from (use the SHA this workflow is called at).
+        required: true
+        type: string
+      config-path:
+        description: Gate settings file in the calling repository's default branch.
+        required: false
+        default: .fleet-gates.json
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    # A comment only matters if it carries the marker: skip the rest and spend no minutes on them.
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       contains(github.event.comment.body, 'fleet-verdict'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: read
+      issues: read
+    env:
+      PYTHONPATH: .fleet-kit/scripts
+      KIT_REF: ${{ inputs.kit-ref }}
+      CONFIG: ${{ inputs.config-path }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Actions are pinned to a commit; update the SHA and the tag comment together.
+      - name: Refuse an unpinned kit-ref
+        run: |
+          [[ "$KIT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "kit-ref must be a full commit SHA, got: $KIT_REF"; exit 1; }
+      # The default branch, never the pull request: only its settings are trusted.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: glennmcd/fleet-kit
+          ref: ${{ inputs.kit-ref }}
+          path: .fleet-kit
+          persist-credentials: false
+      - name: Publish the verdict check
+        run: python3 -m gates.verdict --repo "$REPO" --pr "$PR" --config "$CONFIG"

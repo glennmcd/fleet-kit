@@ -79,6 +79,18 @@ def compare(old: dict[str, Any], new: dict[str, Any]) -> list[Finding]:
         if key not in od.get("exclude", []):
             found.append(_f(f"duplication.exclude gained `{key}`"))
 
+    ov, nv = old.get("verdict"), new.get("verdict")
+    if ov is not None and nv is None:
+        found.append(_f("verdict section removed"))
+    elif ov is not None and nv is not None:
+        known = {r.lower() for r in ov.get("reviewers", [])}
+        for login in nv.get("reviewers", []):
+            if login.lower() not in known:
+                found.append(_f(f"verdict.reviewers gained `{login}`"))
+        for prefix in nv.get("exempt_branches", []):
+            if prefix not in ov.get("exempt_branches", []):
+                found.append(_f(f"verdict.exempt_branches gained `{prefix}`"))
+
     os_, ns = old.get("silent_skips", {}), new.get("silent_skips", {})
     for key in ns.get("exclude", []):
         if key not in os_.get("exclude", []):

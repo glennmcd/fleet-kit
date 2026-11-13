@@ -20,6 +20,7 @@ BASE = {
         {"id": "o", "when": ["src/**"], "also": ["tests/**", "docs/**"], "incident": "#3"}
     ],
     "duplication": {"min_lines": 8},
+    "verdict": {"reviewers": ["glennmcd"], "exempt_branches": ["release-please--"]},
 }
 
 
@@ -51,6 +52,12 @@ LOOSENINGS = {
     "obligation when narrowed": lambda c: c["obligations"][0].__setitem__("when", []),
     "min_lines raised": lambda c: c["duplication"].__setitem__("min_lines", 20),
     "duplication exclude": lambda c: c["duplication"].__setitem__("exclude", ["src/**"]),
+    "reviewer added": lambda c: c["verdict"]["reviewers"].append("someone"),
+    "reviewer added in other case": lambda c: c["verdict"].__setitem__(
+        "reviewers", ["glennmcd", "Agent-Bot"]
+    ),
+    "exempt prefix added": lambda c: c["verdict"]["exempt_branches"].append("feat/"),
+    "verdict section removed": lambda c: c.pop("verdict"),
     "skips exclude": lambda c: c.__setitem__("silent_skips", {"exclude": ["tests/**"]}),
 }
 
@@ -73,6 +80,8 @@ TIGHTENINGS = {
         {"id": "p", "when": ["a"], "also": ["b"], "incident": "#5"}
     ),
     "obligation widened": lambda c: c["obligations"][0]["also"].append("more/**"),
+    "reviewer renamed in case only": lambda c: c["verdict"].__setitem__("reviewers", ["GlennMcD"]),
+    "exempt prefix removed": lambda c: c["verdict"].__setitem__("exempt_branches", []),
     "min_lines lowered": lambda c: c["duplication"].__setitem__("min_lines", 6),
 }
 
