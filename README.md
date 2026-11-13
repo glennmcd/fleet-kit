@@ -94,8 +94,8 @@ treat them, and this report's branch names, as sensitive.
 
 ## Roadmap
 
-1. Measure + token hooks (this round)
-2. Rules layer: byte-capped CLAUDE.md, topic files with incident numbers, rule delivery classes, code maps, handoff template
+1. Measure + token hooks (done)
+2. Rules layer: byte-capped CLAUDE.md, topic files with incident numbers, rule delivery classes, code maps, handoff template (done, in cc-practices 0.6.0)
 3. CI gates: file-size cap, copy-paste check, no silent skips, audit greps, change obligations, gate evasion kit
 4. Review + issues: read-only adversarial reviewer, verdict-at-head merge check, agent-ready issue template
 5. Control plane (VM): clone per agent, write-outside-clone hook, slot/lane allocator, watchdog, stop the line

@@ -8,20 +8,19 @@ rules layer of round 2 and the reviewer of round 4, is `cc-practices-plugin/docs
 Round 1 is done: `context_ceiling` and `wait_cap` hooks, `session_tokens.py`, `fleet_report.py`, and a
 baseline on commitment-tracker-ai (branch `docs/token-baseline`). Compare every change below against it.
 
-## Round 2: rules layer (fleet part)
+## Round 2: rules layer: done
 
-Most of round 2 is in cc-practices. The fleet part:
+Most of round 2 is in cc-practices 0.6.0: core rules capped at 2 KB, pointers to topic files on edit,
+a handoff template, a Python code map, and a `CLAUDE.md` size test. The `CLAUDE.md` cap moved there
+from this plan because it applies to any project, not only a fleet (commitment-tracker-ai's grew from
+3,438 to 8,689 bytes on 2026-10-23 and fails it).
 
-- Measure the always-loaded context per session with `first_context.py` and `fleet_report.py`. The
-  first call is about 56k tokens from the CLI and 79-85k from the desktop app (its system prompt is
-  about 25k tokens larger); fleet agents run from the CLI. The skill listing is capped at about 30k
-  characters: parking the 24 AWS skills (2026-11-12) cut it only to 23k, because claude.ai-synced
-  skills (`anthropic-skills`, `product-management`) took the freed room. Keep unused skills, and
-  claude.ai sync, off the VM.
-- A byte-cap check for a project's `CLAUDE.md`, usable as a CI gate (commitment-tracker-ai's grew from
-  3,438 to 8,689 characters on 2026-10-23).
-
-*Done when*: the VM setup lists which skills it installs, and the `CLAUDE.md` cap check runs in CI.
+The fleet part was measurement. `first_context.py` shows the first call is about 56k tokens from the
+CLI and 79-85k from the desktop app (its system prompt is about 25k tokens larger); fleet agents run
+from the CLI. The skill listing is capped at about 30k characters: parking the 24 AWS skills
+(2026-11-12) cut it only to 23k, because claude.ai-synced skills (`anthropic-skills`,
+`product-management`) took the freed room. Listing the skills the VM installs, and keeping claude.ai
+sync off it, moved to round 5, since there is no VM setup yet.
 
 ## Round 3: CI gates
 
@@ -46,6 +45,7 @@ least-privilege `permissions`) and commitment-tracker-ai uses them.
 
 ## Round 5: control plane (VM)
 
+- VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2).
 - One clone per agent.
 - Write-outside-clone hook: block edits outside the agent's own clone.
 - Slot and lane allocator: which agent works on what, so two agents never touch the same files.
