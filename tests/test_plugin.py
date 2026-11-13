@@ -25,7 +25,7 @@ class Plugin(unittest.TestCase):
             for group in groups
             for h in group["hooks"]
         ]
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 4)
         for command in commands:
             script = re.search(r"\$\{CLAUDE_PLUGIN_ROOT\}/(\S+?\.py)", command)
             self.assertIsNotNone(script, command)

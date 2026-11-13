@@ -131,3 +131,11 @@ A pull request merges only when the reviewer approved its current head commit. [
 publishes a `reviewer-verdict` check run from a marker comment the reviewer posts; a push resets it. The contract,
 calling it, and what it does not guarantee: [docs/verdict.md](docs/verdict.md). The reviewer side (the adversarial
 mode and the posting helper) is in cc-practices.
+
+## Round 5: control plane (in progress)
+
+Two hooks that protect against the rest, built first: [`stop_line.py`](hooks/stop_line.py) refuses every tool
+call while one flag file exists (`scripts/fleet_stop.py stop`), and [`write_guard.py`](hooks/write_guard.py)
+refuses writes outside the agent's own clone. Both act only on a fleet agent (`FLEET_CLONE` set), so installing
+the plugin on a desktop changes nothing. The design (hooks for clear refusals, an OS user per agent for the
+boundary that holds) and what the write guard cannot see: [docs/control-plane.md](docs/control-plane.md).

@@ -1,7 +1,26 @@
 {
-  "description": "fleet-kit: end sub-agents at a context ceiling; never let a sub-agent's prompt cache expire while it waits",
+  "description": "fleet-kit: stop the line, keep writes inside the agent's clone, end sub-agents at a context ceiling; never let a sub-agent's prompt cache expire while it waits",
   "hooks": {
     "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script \"${CLAUDE_PLUGIN_ROOT}/hooks/stop_line.py\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script \"${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.py\"",
+            "timeout": 30
+          }
+        ]
+      },
       {
         "hooks": [
           {
