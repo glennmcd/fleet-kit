@@ -12,9 +12,12 @@ baseline on commitment-tracker-ai (branch `docs/token-baseline`). Compare every 
 
 Most of round 2 is in cc-practices. The fleet part:
 
-- Measure the always-loaded context per session with `fleet_report.py`: the first prompt is 80-84k
-  tokens, of which the skill listing is about 30k characters (about 19k of it AWS skills in
-  `~/.agents/skills`). Keep unused skills off the VM.
+- Measure the always-loaded context per session with `first_context.py` and `fleet_report.py`. The
+  first call is about 56k tokens from the CLI and 79-85k from the desktop app (its system prompt is
+  about 25k tokens larger); fleet agents run from the CLI. The skill listing is capped at about 30k
+  characters: parking the 24 AWS skills (2026-11-12) cut it only to 23k, because claude.ai-synced
+  skills (`anthropic-skills`, `product-management`) took the freed room. Keep unused skills, and
+  claude.ai sync, off the VM.
 - A byte-cap check for a project's `CLAUDE.md`, usable as a CI gate (commitment-tracker-ai's grew from
   3,438 to 8,689 characters on 2026-10-23).
 

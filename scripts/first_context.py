@@ -12,6 +12,7 @@ text of the parts whose name contains a word, for example ``--show SessionStart`
 
     uv run --script scripts/first_context.py --project commitment-tracker-ai
     uv run --script scripts/first_context.py --project commitment-tracker-ai --show SessionStart
+    uv run --script scripts/first_context.py --project commitment-tracker-ai --subagent
     uv run --script scripts/first_context.py path/to/session.jsonl --json
 
 Transcripts hold everything the agent saw: treat the output as sensitive.
@@ -63,7 +64,8 @@ def _attachment_parts(att: dict[str, Any]) -> list[Part]:
     kind = str(att.get("type", "?"))
     if kind == "prompt_snapshot":
         return [Part("system prompt", _text(att.get("systemPrompt")))]
-    if kind == "hook_success":
+    # SessionStart output arrives as hook_success; SubagentStart context as hook_additional_context.
+    if kind in {"hook_success", "hook_additional_context"}:
         return [Part(f"hook {att.get('hookName', '?')}", _text(att.get("content")))]
     if kind == "instructions":
         files = att.get("files") or []
@@ -106,11 +108,13 @@ def first_context(path: Path) -> list[Part]:
     return parts
 
 
-def newest_transcript(root: Path, project: str) -> Path | None:
-    """The newest main (not sub-agent) transcript in the project folders matching `project`."""
+def newest_transcript(root: Path, project: str, subagent: bool = False) -> Path | None:
+    """The newest transcript in the project folders matching `project`: a main session's, or with
+    `subagent` a sub-agent's (kept in `<session>/subagents/`)."""
     needle = project.replace("\\", "-").replace("/", "-").replace(":", "-").lower()
     folders = [p for p in root.iterdir() if p.is_dir() and p.name.lower().endswith(needle)]
-    files = [f for folder in folders for f in folder.glob("*.jsonl")]
+    pattern = "*/subagents/*.jsonl" if subagent else "*.jsonl"
+    files = [f for folder in folders for f in folder.glob(pattern)]
     return max(files, key=lambda f: f.stat().st_mtime, default=None)
 
 
@@ -134,6 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("transcript", nargs="?", help="a .jsonl transcript (default: newest)")
     parser.add_argument("--project", help="pick the newest transcript of this project folder")
+    parser.add_argument(
+        "--subagent", action="store_true", help="with --project, the newest sub-agent transcript"
+    )
     parser.add_argument("--root", default=os.path.expanduser("~/.claude/projects"))
     parser.add_argument("--show", action="append", default=[], help="print parts matching this")
     parser.add_argument("--json", action="store_true", help="print the parts as JSON")
@@ -142,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.transcript:
         path: Path | None = Path(args.transcript)
     elif args.project:
-        path = newest_transcript(Path(args.root), args.project)
+        path = newest_transcript(Path(args.root), args.project, args.subagent)
     else:
         parser.error("give a transcript path or --project")
     if path is None or not path.is_file():

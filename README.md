@@ -75,10 +75,13 @@ Start a session, send one prompt, then:
 ```bash
 uv run --script scripts/first_context.py --project commitment-tracker-ai
 uv run --script scripts/first_context.py --project commitment-tracker-ai --show SessionStart
+uv run --script scripts/first_context.py --project commitment-tracker-ai --subagent --show SubagentStart
 ```
 
 The first prints each part of the first call's context with its size; `--show` prints the text of the
-parts whose name matches (here, cc-practices' core rules). Tool definitions are not recorded, so the total
+parts whose name matches (here, cc-practices' core rules). `--subagent` reads the newest sub-agent's
+transcript instead: sub-agents get no SessionStart output, so cc-practices gives them its rules through a
+`SubagentStart` hook. Tool definitions are not recorded, so the total
 is lower than the 1st-turn tokens in `fleet_report.py`. To preview cc-practices' part without a session,
 run its hook directly from the project folder:
 

@@ -90,6 +90,28 @@ class NewestTranscript(Fixture):
         self.assertEqual(fc.newest_transcript(self.root, "my-app"), new)
         self.assertIsNone(fc.newest_transcript(self.root, "missing"))
 
+    def test_newest_subagent_transcript_of_the_project(self) -> None:
+        self.transcript("C--git-my-app/s.jsonl")
+        old = self.transcript("C--git-my-app/s/subagents/agent-a.jsonl")
+        new = self.transcript("C--git-my-app/s/subagents/agent-b.jsonl")
+        os.utime(old, (1, 1))
+        self.assertEqual(fc.newest_transcript(self.root, "my-app", subagent=True), new)
+
+
+class SubagentContext(Fixture):
+    def test_subagent_start_context_is_named_after_its_hook(self) -> None:
+        records = [
+            att(
+                type="hook_additional_context",
+                hookName="SubagentStart",
+                content=["# Shared practices", "- x"],
+            ),
+            user("review the diff"),
+        ]
+        parts = fc.first_context(self.transcript("p/s/subagents/agent-a.jsonl", records))
+        expected = fc.Part("hook SubagentStart", "# Shared practices\n- x")
+        self.assertEqual(parts[0], expected)
+
 
 class Cli(Fixture):
     def run_main(self, args: list[str]) -> tuple[int, str]:
