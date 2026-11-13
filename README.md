@@ -140,5 +140,7 @@ refuses writes outside the agent's own clone. Both act only on a fleet agent (`F
 the plugin on a desktop changes nothing. A slot is an OS user with one clone:
 [`fleet_slot.py`](scripts/fleet_slot.py) creates it, and the template unit
 [`fleet-agent@.service`](systemd/fleet-agent@.service) runs [`fleet_agent.py`](scripts/fleet_agent.py), which
-starts a headless agent on the slot's assigned issue. The design (hooks for clear refusals, an OS user per agent for the
+starts a headless agent on the slot's assignment. Review slots run the same way with the reviewer's own GitHub
+account. [`fleet_allocate.py`](scripts/fleet_allocate.py), on a timer, gives free slots their next review, fix round
+or new issue from GitHub, by weighted lanes. The design (hooks for clear refusals, an OS user per agent for the
 boundary that holds) and what the write guard cannot see: [docs/control-plane.md](docs/control-plane.md).

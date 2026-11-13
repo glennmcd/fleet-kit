@@ -2,23 +2,30 @@
 # /// script
 # requires-python = ">=3.9"
 # ///
-"""Set up one fleet slot: its OS user, its clone, and the service unit that runs an agent in it.
+"""Set up one fleet slot: its OS user, its clone, and the service units that run the fleet.
 
-    fleet_slot.py add agent01 --repo https://github.com/owner/name.git           print what it would do
-    sudo fleet_slot.py add agent01 --repo https://github.com/owner/name.git --apply    do it
-    fleet_slot.py unit                                                           print the unit
+    fleet_slot.py add agent01 --repo https://github.com/owner/name.git                print what it would do
+    sudo fleet_slot.py add agent01 --repo https://github.com/owner/name.git --apply   do it
+    sudo fleet_slot.py add review01 --repo https://github.com/owner/name.git --apply  a review slot
+    fleet_slot.py unit [--name fleet-review@.service]                                 print the units
 
-A slot is an OS user named ``agentNN`` whose home holds one clone, ``/home/agentNN/repo``. The user is
-the boundary: it can write its home and nothing else. The unit, ``fleet-agent@.service``, is a template;
+A slot is an OS user whose home holds one clone, ``/home/<slot>/repo``. The user is the boundary: it can
+write its home and nothing else. ``agentNN`` slots are authors: they work on issues and fix rounds.
+``reviewNN`` slots are reviewers: they review pull requests and post verdicts as the reviewer's own GitHub
+account. Each kind has a template unit, ``fleet-agent@.service`` and ``fleet-review@.service``;
 ``systemctl start fleet-agent@agent01`` runs ``scripts/fleet_agent.py`` as that user with ``FLEET_CLONE``
-set, which turns on the stop switch and the write guard (docs/control-plane.md).
+set, which turns on the stop switch and the write guard (docs/control-plane.md). The allocator's
+``fleet-allocate.service`` and ``fleet-allocate.timer`` start the slots; enabling the timer is the
+operator's step, once ``/etc/fleet/fleet.json`` is written.
 
-Without ``--apply`` nothing is run: the commands and the unit are printed for the operator to read.
+Without ``--apply`` nothing is run: the commands and the units are printed for the operator to read.
 ``--apply`` needs root, runs each command without a shell, and stops at the first one that fails. It is
 safe to run again: an existing user or clone is kept.
 
-Secrets are not handled here. The unit reads them from ``/etc/fleet/agent.env``, which the operator
-writes by hand, owned by root with mode 600.
+Secrets are not handled here. The units read them from files the operator writes by hand, owned by root
+with mode 600: ``/etc/fleet/agent.env`` (the model key and the authors' GitHub token) for every unit, and
+``/etc/fleet/reviewer.env`` (the reviewer's ``GH_TOKEN`` and ``FLEET_REVIEWER_LOGIN``) for review slots
+only, so an author's run never has the reviewer's token.
 """
 
 from __future__ import annotations
@@ -32,13 +39,16 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-UNIT_NAME = "fleet-agent@.service"
 UNIT_DIR = "/etc/systemd/system"
 DEFAULT_KIT = "/opt/fleet-kit"
 FLEET_DIR = "/var/lib/fleet"
-ENV_FILE = "/etc/fleet/agent.env"
+ENV_DIR = "/etc/fleet"
+AGENT_ENV = f"{ENV_DIR}/agent.env"
+REVIEWER_ENV = f"{ENV_DIR}/reviewer.env"
+ALLOCATOR_ENV = f"{ENV_DIR}/allocator.env"
 
-SLOT_RE = re.compile(r"agent[0-9]{2}")
+AUTHOR_RE = re.compile(r"agent[0-9]{2}")
+REVIEW_RE = re.compile(r"review[0-9]{2}")
 REPO_RE = re.compile(r"https://[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)+")
 KIT_RE = re.compile(r"(/[A-Za-z0-9._-]+)+")
 
@@ -46,8 +56,11 @@ Run = Callable[[Sequence[str]], int]
 
 
 def validate_slot(name: str) -> str:
-    if not SLOT_RE.fullmatch(name):
-        raise ValueError(f"slot {name!r}: a slot is named agentNN, for example agent01")
+    if not (AUTHOR_RE.fullmatch(name) or REVIEW_RE.fullmatch(name)):
+        raise ValueError(
+            f"slot {name!r}: a slot is named agentNN (an author) or reviewNN (a reviewer), "
+            "for example agent01"
+        )
     return name
 
 
@@ -64,15 +77,23 @@ def clone_path(slot: str) -> str:
     return f"/home/{validate_slot(slot)}/repo"
 
 
-def unit_text(kit: str = DEFAULT_KIT) -> str:
-    """The template unit. ``%i`` is the slot, so the user and the clone cannot name different slots."""
-    if not KIT_RE.fullmatch(kit):
-        raise ValueError(f"kit {kit!r}: give an absolute path of letters, digits, '.', '_' and '-'")
+def _slot_unit(kit: str, role: str) -> str:
+    """A slot's template unit. ``%i`` is the slot, so the user and the clone cannot name different slots."""
+    review = role == "review"
+    name = "fleet-review@review01" if review else "fleet-agent@agent01"
+    secrets = (
+        f"# The model key from agent.env; the reviewer's GitHub token and expected login from reviewer.env,\n"
+        f"# read second so its GH_TOKEN replaces the authors'. Owned by root, mode 600; never in this file.\n"
+        f"EnvironmentFile={AGENT_ENV}\nEnvironmentFile={REVIEWER_ENV}"
+        if review
+        else "# Secrets (the model key, the GitHub token). Owned by root, mode 600; never in this file.\n"
+        f"EnvironmentFile={AGENT_ENV}"
+    )
     return f"""\
 # Generated by scripts/fleet_slot.py (`fleet_slot.py unit`); a test keeps this file equal to it.
-# Start one slot with: systemctl start fleet-agent@agent01
+# The allocator starts it; by hand: systemctl start {name}
 [Unit]
-Description=Fleet agent %i
+Description=Fleet {"reviewer" if review else "agent"} %i
 After=network-online.target
 Wants=network-online.target
 
@@ -81,24 +102,93 @@ Type=exec
 User=%i
 WorkingDirectory=/home/%i/repo
 Environment=FLEET_SLOT=%i
+Environment=FLEET_ROLE={role}
 Environment=FLEET_CLONE=/home/%i/repo
 Environment=CC_PRACTICES_UNATTENDED=1
+Environment=GH_NO_UPDATE_NOTIFIER=1
 Environment=PATH=/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
-# Secrets (the model key, the GitHub token). Owned by root, mode 600; never in this file.
-EnvironmentFile={ENV_FILE}
+{secrets}
 ExecStart=/usr/bin/env uv run --script {kit}/scripts/fleet_agent.py
 # One run per assignment: the allocator starts the unit again, not systemd.
 Restart=no
 TimeoutStopSec=30
-# The agent's user can write its home and a private /tmp, and nothing else.
+# The slot's user can write its home and a private /tmp, and nothing else. Other homes are closed to it
+# by their mode (700), not by this unit.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/home/%i
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
 
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def _allocate_service(kit: str) -> str:
+    return f"""\
+# Generated by scripts/fleet_slot.py (`fleet_slot.py unit`); a test keeps this file equal to it.
+# One allocator pass; fleet-allocate.timer runs it. By hand, without changing anything:
+#   sudo FLEET_CONFIG=/etc/fleet/fleet.json uv run --script {kit}/scripts/fleet_allocate.py --dry-run
+[Unit]
+Description=Fleet allocator: give free slots their next work
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=FLEET_CONFIG={ENV_DIR}/fleet.json
+Environment=GH_NO_UPDATE_NOTIFIER=1
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+# It only reads GitHub, but without allocator.env it holds the authors' token, which can write. Put a
+# read-only token there (GH_TOKEN=...) so a bug in the allocator cannot change the repository.
+EnvironmentFile={AGENT_ENV}
+EnvironmentFile=-{ALLOCATOR_ENV}
+ExecStart=/usr/bin/env uv run --script {kit}/scripts/fleet_allocate.py
+# A hung gh call must not hold the lock and stop every later pass.
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths={FLEET_DIR} -/root/.cache -/root/.local/share/uv
+PrivateTmp=yes
+"""
+
+
+ALLOCATE_TIMER = """\
+# Generated by scripts/fleet_slot.py (`fleet_slot.py unit`); a test keeps this file equal to it.
+# Enable once /etc/fleet/fleet.json is written: systemctl enable --now fleet-allocate.timer
+[Unit]
+Description=Run the fleet allocator every 2 minutes
+
+[Timer]
+OnBootSec=2min
+# Counted from the end of the last pass, so two passes never overlap.
+OnUnitInactiveSec=2min
+Unit=fleet-allocate.service
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+def units(kit: str = DEFAULT_KIT) -> dict[str, str]:
+    """Every unit file the fleet needs, by file name."""
+    if not KIT_RE.fullmatch(kit):
+        raise ValueError(f"kit {kit!r}: give an absolute path of letters, digits, '.', '_' and '-'")
+    return {
+        "fleet-agent@.service": _slot_unit(kit, "author"),
+        "fleet-review@.service": _slot_unit(kit, "review"),
+        "fleet-allocate.service": _allocate_service(kit),
+        "fleet-allocate.timer": ALLOCATE_TIMER,
+    }
+
+
+def unit_text(kit: str = DEFAULT_KIT) -> str:
+    """The author slots' unit."""
+    return units(kit)["fleet-agent@.service"]
 
 
 def setup_commands(slot: str, repo: str) -> list[list[str]]:
@@ -111,8 +201,10 @@ def setup_commands(slot: str, repo: str) -> list[list[str]]:
         # The stop file's directory and the assignments: agents read, root writes.
         ["install", "-d", "-o", "root", "-g", "root", "-m", "755", FLEET_DIR],
         ["install", "-d", "-o", "root", "-g", "root", "-m", "755", f"{FLEET_DIR}/slots"],
-        ["install", "-d", "-o", "root", "-g", "root", "-m", "700", ENV_FILE.rsplit("/", 1)[0]],
+        ["install", "-d", "-o", "root", "-g", "root", "-m", "700", ENV_DIR],
         ["useradd", "--create-home", "--shell", "/bin/bash", slot],
+        # Distributions differ on the home's mode; a slot must not read another's clone or transcripts.
+        ["chmod", "700", f"/home/{slot}"],
         [*as_slot, "git", "clone", "--", repo, clone],
         # Pushes use the token in the unit's environment, through gh; nothing is stored in the clone.
         [*as_slot, "git", "-C", clone, "config", "credential.helper", "!gh auth git-credential"],
@@ -139,15 +231,16 @@ def _is_root() -> bool:
 
 def add(slot: str, repo: str, kit: str, unit_dir: str, apply: bool, run: Run, is_root: bool) -> int:
     commands = setup_commands(slot, repo)
-    unit = unit_text(kit)
-    unit_file = Path(unit_dir) / UNIT_NAME
+    files = units(kit)
     reload_systemd = ["systemctl", "daemon-reload"]
+    unit = "fleet-review" if REVIEW_RE.fullmatch(slot) else "fleet-agent"
     if not apply:
         print(f"# Slot {slot}: run as root, or pass --apply.")
         for command in [*commands, reload_systemd]:
             print(shlex.join(command))
-        print(f"\n# Written to {unit_file.as_posix()} before the daemon-reload:")
-        print(unit, end="")
+        for name, text in files.items():
+            print(f"\n# Written to {(Path(unit_dir) / name).as_posix()} before the daemon-reload:")
+            print(text, end="")
         return 0
     if not is_root:
         print("fleet_slot: --apply must run as root (sudo)", file=sys.stderr)
@@ -159,29 +252,39 @@ def add(slot: str, repo: str, kit: str, unit_dir: str, apply: bool, run: Run, is
         if run(command) != 0:
             print(f"fleet_slot: failed, stopping: {shlex.join(command)}", file=sys.stderr)
             return 1
-    unit_file.write_text(unit, encoding="utf-8", newline="\n")
+    for name, text in files.items():
+        (Path(unit_dir) / name).write_text(text, encoding="utf-8", newline="\n")
     if run(reload_systemd) != 0:
         print("fleet_slot: systemctl daemon-reload failed", file=sys.stderr)
         return 1
-    print(f"slot {slot} is ready: write {FLEET_DIR}/slots/{slot}, then start fleet-agent@{slot}")
+    print(
+        f"slot {slot} is ready. List it in {ENV_DIR}/fleet.json and the allocator starts {unit}@{slot}; "
+        f"by hand: write {FLEET_DIR}/slots/{slot}, then systemctl start {unit}@{slot}"
+    )
     return 0
 
 
 def main(argv: list[str] | None = None, run: Run = _run, is_root: bool | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fleet_slot")
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("add", help="create a slot's user, clone and unit")
+    p = sub.add_parser("add", help="create a slot's user and clone, and install the units")
     p.add_argument("slot")
     p.add_argument("--repo", required=True)
     p.add_argument("--kit", default=DEFAULT_KIT, help="where fleet-kit is installed on the machine")
     p.add_argument("--unit-dir", default=UNIT_DIR)
     p.add_argument("--apply", action="store_true", help="run the commands instead of printing them")
-    u = sub.add_parser("unit", help="print the service unit")
+    u = sub.add_parser("unit", help="print the unit files")
     u.add_argument("--kit", default=DEFAULT_KIT)
+    u.add_argument("--name", help="print only this unit file")
     args = parser.parse_args(argv)
     try:
         if args.command == "unit":
-            print(unit_text(args.kit), end="")
+            files = units(args.kit)
+            if args.name:
+                if args.name not in files:
+                    raise ValueError(f"no unit named {args.name!r}; one of {', '.join(files)}")
+                files = {args.name: files[args.name]}
+            print("\n".join(files.values()), end="")
             return 0
         root = _is_root() if is_root is None else is_root
         return add(args.slot, args.repo, args.kit, args.unit_dir, args.apply, run, root)

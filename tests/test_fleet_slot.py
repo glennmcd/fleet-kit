@@ -7,14 +7,14 @@ from pathlib import Path
 
 import fleet_slot
 import pytest
-from fleet_slot import clone_path, setup_commands, unit_text, validate_repo, validate_slot
+from fleet_slot import clone_path, setup_commands, unit_text, units, validate_repo, validate_slot
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "https://github.com/example/project.git"
 
 
-@pytest.mark.parametrize("name", ["agent01", "agent12", "agent99"])
-def test_a_slot_is_agent_and_two_digits(name: str) -> None:
+@pytest.mark.parametrize("name", ["agent01", "agent12", "agent99", "review01", "review12"])
+def test_a_slot_is_agent_or_review_and_two_digits(name: str) -> None:
     assert validate_slot(name) == name
 
 
@@ -89,9 +89,54 @@ def test_the_unit_names_the_kit_it_was_made_for() -> None:
             unit_text(bad)
 
 
-def test_the_committed_unit_is_the_generated_one() -> None:
-    committed = (ROOT / "systemd" / "fleet-agent@.service").read_text(encoding="utf-8")
-    assert committed == unit_text()
+def test_the_committed_units_are_the_generated_ones() -> None:
+    committed = sorted(p.name for p in (ROOT / "systemd").iterdir())
+    assert committed == sorted(units())
+    for name, text in units().items():
+        assert (ROOT / "systemd" / name).read_text(encoding="utf-8") == text, name
+
+
+def test_each_slot_unit_names_its_role() -> None:
+    assert "Environment=FLEET_ROLE=author" in units()["fleet-agent@.service"]
+    assert "Environment=FLEET_ROLE=review" in units()["fleet-review@.service"]
+
+
+def test_only_the_review_unit_reads_the_reviewer_token_and_reads_it_last() -> None:
+    files = units()
+    for name, text in files.items():
+        assert ("reviewer.env" in text) == (name == "fleet-review@.service"), name
+    review = files["fleet-review@.service"].splitlines()
+    env_files = [line for line in review if line.startswith("EnvironmentFile=")]
+    assert env_files == [
+        "EnvironmentFile=/etc/fleet/agent.env",
+        "EnvironmentFile=/etc/fleet/reviewer.env",
+    ]
+
+
+def test_the_review_unit_is_sandboxed_like_the_author_unit() -> None:
+    files = units()
+    for line in (
+        "NoNewPrivileges=yes",
+        "ProtectSystem=strict",
+        "ReadWritePaths=/home/%i",
+        "User=%i",
+        "Restart=no",
+    ):
+        assert line in files["fleet-review@.service"].splitlines()
+
+
+def test_the_allocator_runs_as_root_once_per_timer_tick_and_writes_only_fleet_state() -> None:
+    service = units()["fleet-allocate.service"].splitlines()
+    assert "Type=oneshot" in service and "User=root" in service
+    assert "ReadWritePaths=/var/lib/fleet -/root/.cache -/root/.local/share/uv" in service
+    assert "TimeoutStartSec=5min" in service
+    assert "EnvironmentFile=-/etc/fleet/allocator.env" in service
+    assert any(
+        line.endswith("/scripts/fleet_allocate.py") and line.startswith("ExecStart=")
+        for line in service
+    )
+    timer = units()["fleet-allocate.timer"].splitlines()
+    assert "OnUnitInactiveSec=2min" in timer and "Unit=fleet-allocate.service" in timer
 
 
 def test_setup_makes_the_stop_directory_root_owned_before_anything_else() -> None:
@@ -179,8 +224,21 @@ def test_apply_writes_the_unit_and_reloads_systemd(tmp_path: Path) -> None:
         is_root=True,
     )
     assert code == 0
-    assert (tmp_path / "fleet-agent@.service").read_text(encoding="utf-8") == unit_text()
+    for name, text in units().items():
+        assert (tmp_path / name).read_text(encoding="utf-8") == text
     assert run.ran[-1] == ["systemctl", "daemon-reload"]
+
+
+def test_a_review_slot_gets_its_own_user_and_clone() -> None:
+    commands = setup_commands("review01", REPO)
+    assert ["useradd", "--create-home", "--shell", "/bin/bash", "review01"] in commands
+    assert clone_path("review01") == "/home/review01/repo"
+
+
+def test_the_unit_command_prints_one_unit_by_name(capsys: pytest.CaptureFixture[str]) -> None:
+    assert fleet_slot.main(["unit", "--name", "fleet-allocate.timer"]) == 0
+    assert capsys.readouterr().out == units()["fleet-allocate.timer"]
+    assert fleet_slot.main(["unit", "--name", "nope.service"]) == 2
 
 
 def test_a_bad_slot_on_the_command_line_is_an_error_not_a_traceback(
@@ -193,3 +251,24 @@ def test_a_bad_slot_on_the_command_line_is_an_error_not_a_traceback(
 def test_setup_makes_the_secrets_directory_root_only() -> None:
     commands = setup_commands("agent01", REPO)
     assert ["install", "-d", "-o", "root", "-g", "root", "-m", "700", "/etc/fleet"] in commands
+
+
+def test_a_slots_home_is_closed_to_the_other_slots() -> None:
+    commands = setup_commands("review01", REPO)
+    chmod = ["chmod", "700", "/home/review01"]
+    assert chmod in commands
+    assert (
+        commands.index(chmod)
+        == commands.index(["useradd", "--create-home", "--shell", "/bin/bash", "review01"]) + 1
+    )
+
+
+def test_slot_units_hide_devices_and_kernel_settings() -> None:
+    for name in ("fleet-agent@.service", "fleet-review@.service"):
+        lines = units()[name].splitlines()
+        for setting in (
+            "PrivateDevices=yes",
+            "ProtectKernelTunables=yes",
+            "ProtectControlGroups=yes",
+        ):
+            assert setting in lines, (name, setting)

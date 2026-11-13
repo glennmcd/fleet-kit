@@ -47,20 +47,22 @@ reusable workflow, which is why fleet-kit is public (main and tags are protected
   approval resets it. Release-please PRs are exempt by branch prefix. Built in fleet-kit v0.3.0; see `docs/verdict.md`.
 
 *Done when*: a PR cannot merge without a reviewer verdict on its head SHA. `reviewer-verdict` is a required check
-on commitment-tracker-ai's main. Open: the reviewer still shares the author's token. Decided (2026-11-13): the
-reviewer gets its own GitHub account, `g26work`, set up with the VM (round 5); then list it in `verdict.reviewers`
-and remove the shared login.
+on commitment-tracker-ai's main. The reviewer has its own account, `g26work`, which is the only one in
+`verdict.reviewers` there; on the fleet machine it posts from review slots (round 5).
 
 ## Round 5: control plane (VM)
 
-- VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2), and gives the
-  reviewer its own GitHub account (from round 4).
+- VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2), and installs
+  `uv`, `claude`, `gh`, `rtk` and both plugins for each slot's user.
 - One clone per agent, with a service unit per slot. Built: `scripts/fleet_slot.py`, `scripts/fleet_agent.py`
   and `systemd/fleet-agent@.service`. Not yet run on a real machine: `systemd-analyze verify` and one slot's
   first run are the operator's.
 - Write-outside-clone hook: block edits outside the agent's own clone. Built in v0.4.0: `hooks/write_guard.py`.
 - Slot and lane allocator: which agent works on what, so two agents never touch the same files. Lanes are
-  weighted, and two thirds of the slots are kept for work already in flight (open PRs and their fix rounds).
+  weighted, and two thirds of the author slots are kept for fix rounds. Reviews are fleet work too, as in
+  Marquardt's fleet: review slots (`reviewNN`) review green PRs and post verdicts as `g26work`. Built:
+  `scripts/fleet_allocate.py`, `systemd/fleet-review@.service` and `systemd/fleet-allocate.timer`. Not yet run
+  on a real machine.
 - Watchdog: a timer job with no AI that checks for stalled agents, a red main, stuck PRs and failed units, and
   logs each run as caught, clean or missed. A red main sets the stop flag.
 - Stop the line: one switch that halts every agent. Built in v0.4.0: `hooks/stop_line.py` and

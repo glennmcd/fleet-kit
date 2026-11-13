@@ -58,10 +58,11 @@ The ratchet gate refuses a PR that adds a reviewer or an exempt prefix, or remov
 ## What it does and does not guarantee
 
 It guarantees the verdict is about the exact commit that merges, was written by a listed account, and was not
-quoted, edited or replayed from an older commit. It does **not** make the reviewer independent of the author:
-the agents run with one GitHub token, so any session could post an approval as that account. Independence is
-by process (the reviewer sees only the diff and the issue, in a separate agent) until the reviewer has its own
-identity. When it does, list that login in `verdict.reviewers` and remove the shared one.
+quoted, edited or replayed from an older commit. Independence from the author comes from two things outside
+this check. The reviewer has its own GitHub account, the only one in `verdict.reviewers`, whose token only the
+fleet's review slots hold (`docs/control-plane.md`): an author's run cannot post an approval. And the reviewer
+agent sees only the diff and the issue, never the author's reasoning. Anyone holding the reviewer's token can
+still approve, so keep it on the fleet machine, readable by root only.
 
 ## Security notes
 
