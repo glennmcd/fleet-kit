@@ -63,6 +63,10 @@ on commitment-tracker-ai's main. The reviewer has its own account, `g26work`, wh
   Marquardt's fleet: review slots (`reviewNN`) review green PRs and post verdicts as `g26work`. Built:
   `scripts/fleet_allocate.py`, `systemd/fleet-review@.service` and `systemd/fleet-allocate.timer`. Not yet run
   on a real machine.
+- No root to run the fleet: groups `fleet-admin` (operators, a `claude` login, the allocator's own user),
+  `fleet-agent` and `fleet-review`; a polkit rule for the fleet's units; the allocator as `fleet-allocator`;
+  check units and a dry-run unit so admins never read a token; slices per role, no limits yet. Built:
+  `fleet_slot.py init`, `scripts/fleet_check.py`. Not yet run on a real machine (Ubuntu 26.04).
 - Watchdog: a timer job with no AI that checks for stalled agents, a red main, stuck PRs and failed units, and
   logs each run as caught, clean or missed. A red main sets the stop flag.
 - Stop the line: one switch that halts every agent. Built in v0.4.0: `hooks/stop_line.py` and

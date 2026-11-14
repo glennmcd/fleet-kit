@@ -2,8 +2,8 @@
 
 What runs a dozen agents on one Linux machine without them trampling each other, and lets one person stop
 them. This page covers what is built: the stop switch and the write guard, which protect against the rest; the
-slots (an OS user, its clone and its service unit), for authors and for reviewers; and the allocator that gives
-them work. The watchdog and the VM setup follow.
+slots (an OS user, its clone and its service unit), for authors and for reviewers; who needs root (only setup);
+and the allocator that gives them work. The watchdog and the VM setup follow.
 
 The design is two layers. **Hooks** give an agent a clear refusal and keep it from making honest mistakes.
 **The agent's OS user** is the boundary that holds: each agent runs as its own user, and that user can write
@@ -40,8 +40,9 @@ stopped, but it cannot work around the stop.
 
 - **It stops new tool calls, not running commands.** A test run that is already going finishes. Pair the flag
   file with `systemctl stop 'fleet-agent@*'` to end the processes.
-- **The agents must not be able to clear it.** Make `/var/lib/fleet` owned by the operator and read-only to the
-  agents' users. If an agent's user can delete the file, the stop is only a suggestion.
+- **The agents must not be able to clear it.** `fleet_slot.py init` gives `/var/lib/fleet` to the fleet-admin
+  group, read-only to the agents' users, so any admin can stop and clear the line without root and no agent
+  can. If an agent's user can delete the file, the stop is only a suggestion.
 - **It fails closed.** If the hook cannot check the file, or crashes, the call is refused.
 
 ## Write guard
@@ -72,18 +73,21 @@ These are allowed, on purpose, and written down as tests (`KNOWN LIMIT` in
 One user per slot, with the clone in its home (`/home/agent01/repo`) and nothing else it can write. `agentNN`
 slots are authors: they work on issues and fix rounds. `reviewNN` slots are reviewers: they review pull requests
 and post verdicts as the reviewer's own GitHub account. [`scripts/fleet_slot.py`](../scripts/fleet_slot.py) sets
-a slot up:
+up the machine once, then each slot:
 
 ```bash
-uv run scripts/fleet_slot.py add agent01 --repo https://github.com/owner/name.git           # prints what it would do
+uv run scripts/fleet_slot.py init --admin "$USER"                    # prints what it would do
+sudo uv run scripts/fleet_slot.py init --admin "$USER" --apply      # the machine, once
 sudo uv run scripts/fleet_slot.py add agent01 --repo https://github.com/owner/name.git --apply
 sudo uv run scripts/fleet_slot.py add review01 --repo https://github.com/owner/name.git --apply
 ```
 
-Without `--apply` it only prints the commands and the units. With it, as root, it creates `/var/lib/fleet`
-(agents read, root writes), the user and the clone, sets the clone to push with the token from the unit's
-environment, and installs the four units in [`systemd/`](../systemd). It runs no shell, stops at the first failure, and keeps a user or clone
-that already exists. `--kit` says where fleet-kit is installed on the machine (default `/opt/fleet-kit`).
+Without `--apply` they only print. `init` creates the groups and users of [Who needs root](#who-needs-root),
+gives `/var/lib/fleet` to fleet-admin, and installs the units in [`systemd/`](../systemd), the polkit rule and
+the sshd file. `--kit` says where fleet-kit is installed (default `/opt/fleet-kit`). `add` creates the slot's
+user in its role's group, its clone, and sets the clone to push with the token from the unit's environment.
+Both run no shell, stop at the first failure, and keep a user or clone that already exists, so a slot made
+before `init` existed is brought up to date by running `add` again.
 
 The operator writes the secrets once, by hand. They are never in the repository or the unit:
 
@@ -109,10 +113,63 @@ The review slot also loads `agent.env` for the model key, so the authors' `GH_TO
 until `reviewer.env` replaces it. The login checks catch a mix-up; keeping the model key in a file of its own
 would remove the authors' token from review slots altogether, and is the next step if that matters to you.
 
-Each slot's home is mode 700, so one slot cannot read another's clone or transcripts.
+Each slot's home is mode 700, so one slot cannot read another's clone or transcripts. An ACL lets fleet-admin
+read it, to look at a clone left for a person.
 
 Not set up here yet (the VM setup will do it): `uv`, `claude`, `gh` and `rtk` on the machine, and this plugin
 and cc-practices installed for each slot's user. Without the plugin installed for that user, the hooks do not run.
+Install `uv` where the allocator finds it too: `/usr/local/bin`, or `~/.local/bin` of `fleet-allocator`.
+
+## Who needs root
+
+Root sets the machine up (`init`, `add`, the secrets, `systemctl enable`), and nothing after that. Running the
+fleet is the **fleet-admin** group's: the operators, a `claude` login for the operator's agent (not in sudo),
+and the allocator's own user, `fleet-allocator`.
+
+| Group | Members | What it gives |
+|---|---|---|
+| `fleet-admin` | operators, `claude`, `fleet-allocator` | start, stop, restart and reset the fleet's units (polkit); write `/var/lib/fleet` (assignments, state, the stop flag); read the slots' homes; read the journal (`systemd-journal`) |
+| `fleet-agent` | `agentNN` | nothing on files; no SSH login |
+| `fleet-review` | `reviewNN` | nothing on files; no SSH login |
+
+The polkit rule, `/etc/polkit-1/rules.d/50-fleet.rules`, allows `start`, `stop`, `restart` and `reset-failed`
+on `fleet-agent@agentNN`, `fleet-review@reviewNN`, their check units, `fleet-allocate` (service and timer) and
+`fleet-allocate-dry-run`, and on no other unit. Each template takes only its own kind of slot, so an author
+unit cannot be started as a reviewer. Installing or enabling units and reloading systemd stay root's.
+
+What fleet-admin does **not** get, because either would make it root by another name:
+
+- **The secrets.** `/etc/fleet` stays root-only. systemd reads the env files as root before it drops to the
+  unit's user, so no admin needs to. To check a slot or preview the allocator, start the unit that runs as
+  that user with those secrets, and read its result in the journal:
+
+  ```bash
+  systemctl start fleet-check-review@review01       # or fleet-check-agent@agent01
+  journalctl -u fleet-check-review@review01 -o cat -n 30
+  ```
+
+  [`fleet_check.py`](../scripts/fleet_check.py) reports, without printing a secret: the slot's role, the
+  unattended switch, the tools on the PATH, the model key's name, the `gh` login (and that it is
+  `FLEET_REVIEWER_LOGIN` on a review slot), the clone, both plugins, the home's mode, the sandbox (no write to
+  `/var/lib/fleet`, no read of `/etc/fleet`) and the stop flag.
+- **The code.** `/opt/fleet-kit`, the units and the slots' plugins run as the slots or the allocator; they stay
+  root's, so an admin cannot change what those users run.
+
+Members of a new group must log in again before they have it (`id` shows the groups).
+
+The `claude` login has no password; it signs in with a key of its own, made on the operator's machine for this
+use only, so revoking it touches nothing else:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/fleet-claude -C claude@fleet          # on the operator's machine
+sudo install -d -m 700 -o claude -g claude /home/claude/.ssh          # on the fleet machine
+sudo install -m 600 -o claude -g claude /dev/stdin /home/claude/.ssh/authorized_keys < fleet-claude.pub
+```
+
+The slots' units run in `fleet-agent.slice` and `fleet-review.slice`, under `fleet.slice` with the allocator
+and the checks; `systemctl status fleet.slice` shows the whole fleet. They have no limits yet. When the first
+runs show what an agent needs, add `MemoryMax=` and `CPUQuota=` in a drop-in, so one runaway test suite
+cannot starve the reviewer.
 
 ## The slots' service units
 
@@ -122,11 +179,14 @@ instance name, so a unit cannot run one slot's agent in another slot's clone. Ea
 `FLEET_SLOT`, `FLEET_ROLE` and `CC_PRACTICES_UNATTENDED=1`, reads its secrets, and lets the process write only
 its home and a private `/tmp` (`ProtectSystem=strict`). Neither restarts: one run is one assignment.
 
+As a member of fleet-admin, no `sudo`:
+
 ```bash
-echo "issue 12" | sudo tee /var/lib/fleet/slots/agent01      # by hand; the allocator normally does this
-sudo systemctl start fleet-agent@agent01
+echo "issue 12" > /var/lib/fleet/slots/agent01      # by hand; the allocator normally does this
+systemctl start fleet-agent@agent01
 journalctl -u fleet-agent@agent01 -f
-sudo systemctl stop 'fleet-agent@*' 'fleet-review@*'         # with fleet_stop.py stop, ends every agent
+systemctl stop 'fleet-agent@*' 'fleet-review@*'     # with fleet_stop.py stop, ends every agent
+systemctl reset-failed fleet-agent@agent01          # after looking at a failed run
 ```
 
 The units run [`scripts/fleet_agent.py`](../scripts/fleet_agent.py), which checks before it starts an agent:
@@ -150,8 +210,9 @@ there to answer a prompt, and the limits are the OS user, the unit's sandbox and
 ## The allocator
 
 [`scripts/fleet_allocate.py`](../scripts/fleet_allocate.py) gives free slots their next work, one pass at a time.
-[`fleet-allocate.timer`](../systemd/fleet-allocate.timer) runs a pass 2 minutes after the last one ended, as root,
-since it writes the assignment files and starts the units. It only reads GitHub.
+[`fleet-allocate.timer`](../systemd/fleet-allocate.timer) runs a pass 2 minutes after the last one ended, as the
+user `fleet-allocator`, a member of fleet-admin: it writes the assignment files and starts the units through the
+polkit rule, and can do nothing an admin cannot. It only reads GitHub.
 
 It reads `/etc/fleet/fleet.json`:
 
@@ -188,12 +249,15 @@ person. Run counts and reviewed heads are kept in `/var/lib/fleet/state.json`. W
 read from the repository's `.fleet-gates.json`, the same list the merge check uses.
 
 ```bash
-sudo FLEET_CONFIG=/etc/fleet/fleet.json uv run --script /opt/fleet-kit/scripts/fleet_allocate.py --dry-run
-sudo systemctl enable --now fleet-allocate.timer
+systemctl start fleet-allocate-dry-run                        # fleet-admin: one pass that changes nothing
+journalctl -u fleet-allocate-dry-run -o cat -n 50             # what it would assign
+sudo systemctl enable --now fleet-allocate.timer              # root, once
 journalctl -u fleet-allocate -f
+systemctl stop fleet-allocate.timer                           # fleet-admin: pause the passes
 ```
 
-`--dry-run` prints what a pass would assign and changes nothing. A pass does every read before it writes
+`fleet-allocate-dry-run` runs `fleet_allocate.py --dry-run` as the allocator, with its token, so whoever starts it
+never holds the token. It prints what a pass would assign and changes nothing. A pass does every read before it writes
 anything: if `systemctl` gives an answer it does not know, a GitHub call fails or times out, a listing reaches its
 limit (200 issues, 100 pull requests), or `state.json` is unreadable, it ends with nothing changed. A unit that
 fails to start gives its work back and is not counted as a run.

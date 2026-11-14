@@ -7,15 +7,18 @@
 
 The flag file is ``FLEET_STOP_FILE`` (default ``/var/lib/fleet/STOP``). The hook that reads it is
 ``hooks/stop_line.py``. It stops new tool calls; it does not kill a command already running, so pair
-it with stopping the agents' service units (docs/control-plane.md). The directory must be owned by the
-operator and not writable by the agents' users, or an agent could clear its own stop.
+it with stopping the agents' service units (docs/control-plane.md). The directory belongs to the
+fleet-admin group (``fleet_slot.py init``) and is not writable by the agents' users, or an agent could
+clear its own stop. Any member of fleet-admin can stop and clear the line, without root.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -27,10 +30,24 @@ def flag_path() -> Path:
 
 
 def stop(reason: str, path: Path | None = None) -> Path:
+    """Write the flag as a new file renamed into place.
+
+    The directory belongs to fleet-admin, but a flag another admin wrote is that admin's file. Renaming
+    needs only the directory, so any admin can replace it; mode 664 lets the group read and fix it.
+    """
     path = path or flag_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y-%m-%d %H:%M:%S %z")
-    path.write_text(f"{reason.strip() or 'stopped by the operator'} ({stamp})\n", encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(prefix=".STOP.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f"{reason.strip() or 'stopped by the operator'} ({stamp})\n")
+        os.chmod(tmp, 0o664)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
     return path
 
 

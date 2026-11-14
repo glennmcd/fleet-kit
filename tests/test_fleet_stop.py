@@ -105,6 +105,18 @@ def test_as_a_process_it_is_silent_while_running(flag: Path) -> None:
     assert done.returncode == 0 and done.stdout == ""
 
 
+def test_stopping_again_replaces_the_note_without_writing_into_the_old_file(flag: Path) -> None:
+    # Another admin's flag may not be writable by this one; the directory is: write new, rename.
+    stop("first", flag)
+    before = os.stat(flag).st_ino
+    stop("second", flag)
+    assert "second" in (status(flag) or "")
+    if os.name == "posix":
+        assert os.stat(flag).st_ino != before
+        assert os.stat(flag).st_mode & 0o777 == 0o664
+    assert [p.name for p in flag.parent.iterdir()] == ["STOP"]
+
+
 def test_the_command_line_stops_clears_and_reports(flag: Path) -> None:
     assert fleet_stop.main(["status"]) == 0
     assert fleet_stop.main(["stop", "mid", "run"]) == 0

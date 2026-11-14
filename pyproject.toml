@@ -46,6 +46,8 @@ files = [
   "scripts/fleet_allocate.py",
   "tests/test_fleet_allocate.py",
   "tests/test_fleet_allocate_io.py",
+  "scripts/fleet_check.py",
+  "tests/test_fleet_check.py",
   "tests/test_evasion_write_guard.py",
   "tests/test_evasion_kit.py",
   "tests/test_evasion_silent_skips.py",
@@ -70,3 +72,4 @@ mypy_path = "scripts:hooks"
 "scripts/fleet_slot.py" = ["E501"]
 "scripts/fleet_agent.py" = ["E501"]
 "scripts/fleet_allocate.py" = ["E501"]
+"scripts/fleet_check.py" = ["E501"]
