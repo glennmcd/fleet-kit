@@ -78,7 +78,8 @@ ADMIN_UNITS_RE = (
     r"|fleet-review@review[0-9]{2}\.service"
     r"|fleet-check-agent@agent[0-9]{2}\.service"
     r"|fleet-check-review@review[0-9]{2}\.service"
-    r"|fleet-allocate\.service|fleet-allocate\.timer|fleet-allocate-dry-run\.service)"
+    r"|fleet-allocate\.service|fleet-allocate\.timer|fleet-allocate-dry-run\.service"
+    r"|fleet-watchdog\.service|fleet-watchdog\.timer)"
 )
 ADMIN_VERBS = ("start", "stop", "restart", "reset-failed")
 
@@ -256,6 +257,54 @@ WantedBy=timers.target
 """
 
 
+def _watchdog_service(kit: str) -> str:
+    return f"""{HEADER}# One watchdog pass, with no AI; fleet-watchdog.timer runs it. Its lines start with caught or missed, and
+# the last one is the run's result: journalctl -u fleet-watchdog -o cat -n 30
+[Unit]
+Description=Fleet watchdog: stalled agents, a red main, stuck pull requests, failed units
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The allocator's user: it reads what the allocator reads and, when main is red, writes the stop flag.
+User={ALLOCATOR_USER}
+# To read the slots' journal lines, which tell a stalled agent from a working one.
+SupplementaryGroups={JOURNAL_GROUP}
+Slice=fleet.slice
+UMask=0002
+LoadCredential=fleet.json:{ENV_DIR}/fleet.json
+Environment=FLEET_CONFIG=%d/fleet.json
+Environment=GH_NO_UPDATE_NOTIFIER=1
+Environment=PATH={ALLOCATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
+# It only reads GitHub: allocator.env's read-only token replaces the authors' when it is there.
+EnvironmentFile={AGENT_ENV}
+EnvironmentFile=-{ALLOCATOR_ENV}
+ExecStart=/usr/bin/env uv run --script {kit}/scripts/fleet_watchdog.py
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths={FLEET_DIR} {ALLOCATOR_HOME}
+PrivateTmp=yes
+"""
+
+
+WATCHDOG_TIMER = f"""{HEADER}# Enable with the allocator's timer (root): systemctl enable --now fleet-watchdog.timer
+# Pause it as a member of fleet-admin: systemctl stop fleet-watchdog.timer
+[Unit]
+Description=Run the fleet watchdog every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+Unit=fleet-watchdog.service
+
+[Install]
+WantedBy=timers.target
+"""
+
+
 def _slice(name: str, what: str) -> str:
     return f"""\
 {HEADER}# {what}. `systemctl status {name}` shows them together. No limits yet: once the first runs
@@ -282,6 +331,8 @@ def units(kit: str = DEFAULT_KIT) -> dict[str, str]:
         "fleet-allocate.service": _allocate_service(kit),
         "fleet-allocate-dry-run.service": _allocate_service(kit, dry_run=True),
         "fleet-allocate.timer": ALLOCATE_TIMER,
+        "fleet-watchdog.service": _watchdog_service(kit),
+        "fleet-watchdog.timer": WATCHDOG_TIMER,
     }
 
 

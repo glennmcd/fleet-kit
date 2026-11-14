@@ -229,6 +229,27 @@ def test_the_dry_run_is_a_unit_so_admins_never_hold_the_token() -> None:
             assert line in dry, line
 
 
+def test_the_watchdog_runs_as_the_allocators_user_and_can_read_the_journal() -> None:
+    service = units()["fleet-watchdog.service"].splitlines()
+    assert "Type=oneshot" in service
+    assert "User=fleet-allocator" in service
+    # Reading other units' journal lines needs this group; the allocator's user is not in it.
+    assert "SupplementaryGroups=systemd-journal" in service
+    assert "LoadCredential=fleet.json:/etc/fleet/fleet.json" in service
+    assert "Environment=FLEET_CONFIG=%d/fleet.json" in service
+    # It writes the stop flag and nothing else.
+    assert "ReadWritePaths=/var/lib/fleet /var/lib/fleet-allocator" in service
+    assert "ProtectSystem=strict" in service and "ProtectHome=yes" in service
+    assert "UMask=0002" in service
+    assert "EnvironmentFile=-/etc/fleet/allocator.env" in service
+    assert any(
+        line.startswith("ExecStart=") and line.endswith("/scripts/fleet_watchdog.py")
+        for line in service
+    )
+    timer = units()["fleet-watchdog.timer"].splitlines()
+    assert "OnUnitInactiveSec=5min" in timer and "Unit=fleet-watchdog.service" in timer
+
+
 # --- polkit and sshd ------------------------------------------------------------------------------
 
 
@@ -242,6 +263,8 @@ def test_the_dry_run_is_a_unit_so_admins_never_hold_the_token() -> None:
         "fleet-allocate.service",
         "fleet-allocate.timer",
         "fleet-allocate-dry-run.service",
+        "fleet-watchdog.service",
+        "fleet-watchdog.timer",
     ],
 )
 def test_admins_may_manage_the_fleets_units(unit: str) -> None:
@@ -262,6 +285,8 @@ def test_admins_may_manage_the_fleets_units(unit: str) -> None:
         "fleet-agent.slice",
         "xfleet-allocate.service",
         "fleet-allocate.serviceX",
+        "fleet-watchdog@agent01.service",
+        "fleet-watchdog.serviceX",
     ],
 )
 def test_admins_may_not_manage_any_other_unit(unit: str) -> None:

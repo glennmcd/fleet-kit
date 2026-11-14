@@ -104,6 +104,7 @@ class Pull:
     ci: str  # "pass", "fail" or "running"
     verdict: str | None  # "approve", "request_changes" or None, at the head commit
     created_at: str
+    updated_at: str = ""
 
     @property
     def issue(self) -> int | None:
@@ -499,7 +500,7 @@ def verdict_at_head(
 
 
 def fetch_pulls(cfg: Config, reviewers: list[str], gh: Gh) -> list[Pull]:
-    fields = "number,headRefName,headRefOid,isDraft,isCrossRepository,mergeable,statusCheckRollup,createdAt"
+    fields = "number,headRefName,headRefOid,isDraft,isCrossRepository,mergeable,statusCheckRollup,createdAt,updatedAt"
     raw = json.loads(
         gh(
             [
@@ -542,6 +543,7 @@ def fetch_pulls(cfg: Config, reviewers: list[str], gh: Gh) -> list[Pull]:
                 ci=ci,
                 verdict=verdict,
                 created_at=str(p.get("createdAt") or ""),
+                updated_at=str(p.get("updatedAt") or ""),
             )
         )
     return pulls

@@ -71,7 +71,8 @@ on commitment-tracker-ai's main. The reviewer has its own account, `g26work`, wh
   Built: `scripts/fleet_stream.py`, tested against two recorded runs (`tests/fixtures/stream/`). The watchdog
   can read a stall as "no journal line for N minutes".
 - Watchdog: a timer job with no AI that checks for stalled agents, a red main, stuck PRs and failed units, and
-  logs each run as caught, clean or missed. A red main sets the stop flag.
+  logs each run as caught, clean or missed. A red main sets the stop flag. Built: `scripts/fleet_watchdog.py`,
+  `systemd/fleet-watchdog.service` and `systemd/fleet-watchdog.timer`. Not yet run on a real machine.
 - Stop the line: one switch that halts every agent. Built in v0.4.0: `hooks/stop_line.py` and
   `scripts/fleet_stop.py`.
 

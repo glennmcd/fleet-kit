@@ -3,7 +3,7 @@
 What runs a few agents (four authors in round 5) on one Linux machine without them trampling each other, and lets one person stop
 them. This page covers what is built: the stop switch and the write guard, which protect against the rest; the
 slots (an OS user, its clone and its service unit), for authors and for reviewers; who needs root (only setup);
-and the allocator that gives them work. The watchdog and the VM setup follow.
+the allocator that gives them work; and the watchdog. The VM setup follows.
 
 The design is two layers. **Hooks** give an agent a clear refusal and keep it from making honest mistakes.
 **The agent's OS user** is the boundary that holds: each agent runs as its own user, and that user can write
@@ -148,8 +148,8 @@ and the allocator's own user, `fleet-allocator`.
 | `fleet-review` | `reviewNN` | nothing on files; no SSH login |
 
 The polkit rule, `/etc/polkit-1/rules.d/50-fleet.rules`, allows `start`, `stop`, `restart` and `reset-failed`
-on `fleet-agent@agentNN`, `fleet-review@reviewNN`, their check units, `fleet-allocate` (service and timer) and
-`fleet-allocate-dry-run`, and on no other unit. Each template takes only its own kind of slot, so an author
+on `fleet-agent@agentNN`, `fleet-review@reviewNN`, their check units, `fleet-allocate` (service and timer),
+`fleet-allocate-dry-run` and `fleet-watchdog` (service and timer), and on no other unit. Each template takes only its own kind of slot, so an author
 unit cannot be started as a reviewer. Installing or enabling units and reloading systemd stay root's.
 
 What fleet-admin does **not** get, because either would make it root by another name:
@@ -324,3 +324,50 @@ gh label create lane:feature
 gh label create lane:fix
 gh label create lane:tooling
 ```
+
+## The watchdog
+
+[`scripts/fleet_watchdog.py`](../scripts/fleet_watchdog.py) is a timer job with no AI in it. Every 5 minutes
+it looks for four things the fleet cannot see about itself, as the allocator's user:
+
+| Check | What it catches | What it does |
+|---|---|---|
+| `failed-unit` | a slot's unit or `fleet-allocate.service` has failed, or `fleet-allocate.timer` is not running | reports it, with the command to look and reset |
+| `stalled` | a running slot that has written no journal line for `stall_minutes` (15) | reports it; `systemctl stop` on the unit frees the slot |
+| `red-main` | a failed check on the default branch's head commit | sets the stop flag, since every agent would branch from a broken main |
+| `stuck-pr` | an open `issue/<n>` pull request unchanged for `stuck_pr_minutes` (120) that no running slot holds | reports what it waits for: a fix round, a review, its checks, or a person to merge it |
+
+Each finding is one journal line that starts with `caught` (a problem) or `missed` (the check could not be
+made, so a problem may have gone unseen). The last line is the run's result:
+
+```text
+caught stalled: fleet-agent@agent01 (issue 12) has logged nothing for 23 min (limit 15); `systemctl stop fleet-agent@agent01` frees the slot
+missed stuck-pr: gh pr list --repo failed: HTTP 502
+watchdog: caught 1, missed 1
+```
+
+A run with nothing to report prints `watchdog: clean`. The unit exits 1 when a check was missed, so
+`systemctl --failed` shows a watchdog that cannot see.
+
+```bash
+sudo systemctl enable --now fleet-watchdog.timer              # root, once
+journalctl -u fleet-watchdog -o cat -n 30                     # the last runs
+systemctl start fleet-watchdog                                # fleet-admin: one pass now
+systemctl stop fleet-watchdog.timer                           # fleet-admin: pause it
+```
+
+The stop flag is the only thing it writes. It starts and stops no unit and writes nothing to GitHub. A red
+main stops the line once: a line that is already stopped keeps its note, and a person clears the flag
+(`fleet_stop.py clear`) after main is green. If the flag is cleared while main is still red, the next run
+sets it again. A cancelled check is not red.
+
+The stall check reads the journal, which the allocator's user cannot. The unit adds the `systemd-journal`
+group for this run only (`SupplementaryGroups=`). The limits are optional keys in `/etc/fleet/fleet.json`:
+
+```json
+"watchdog": {"stall_minutes": 15, "stuck_pr_minutes": 120}
+```
+
+A long command is not a stall: the `wait_cap` hook holds an agent's waits to about 5 minutes, well under
+`stall_minutes`. An approved pull request that nobody merges for two hours is reported as stuck on every
+run until it is merged; raise `stuck_pr_minutes` if that is noise.
