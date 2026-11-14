@@ -11,7 +11,8 @@ fleet-admin can check a slot without reading its tokens:
     journalctl -u fleet-check-review@review01 -o cat -n 30
 
 It reports, one line each: the slot's name and role agree; the unattended switch is on; the tools are on
-the PATH; a model key is set (its name, never its value); ``gh`` is signed in, as ``FLEET_REVIEWER_LOGIN``
+the PATH; ``gh`` has ``api --slurp`` (2.48 or later, which the allocator needs; Ubuntu's own package is
+older); a model key is set (its name, never its value); ``gh`` is signed in, as ``FLEET_REVIEWER_LOGIN``
 on a review slot; the clone is there and clean; both plugins are installed; the home is closed to other
 users; the sandbox keeps the slot out of ``/var/lib/fleet`` and ``/etc/fleet``; the line is not stopped.
 Exit 0 when every check passes, 1 otherwise.
@@ -36,6 +37,8 @@ TOOLS = ("uv", "claude", "gh", "git", "rtk")
 PLUGINS = ("fleet-kit", "cc-practices")
 MODEL_KEYS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 ROLES = {"author": re.compile(r"agent[0-9]{2}"), "review": re.compile(r"review[0-9]{2}")}
+GH_VERSION_RE = re.compile(r"gh version ([0-9]+\.[0-9]+\.[0-9]+)")
+GH_SLURP_RE = re.compile(r"^\s+--slurp\b", re.MULTILINE)
 
 Result = tuple[str, bool, str]
 
@@ -74,6 +77,24 @@ def _tools(m: Machine) -> Result:
     if missing:
         return "tools", False, f"not on PATH: {', '.join(missing)}"
     return "tools", True, ", ".join(TOOLS)
+
+
+def _gh_version(m: Machine) -> Result:
+    """The allocator reads paged comments with ``gh api --paginate --slurp``, which gh gained in 2.48."""
+    code, out = m.run(["gh", "--version"])
+    match = GH_VERSION_RE.search(out) if code == 0 else None
+    if match is None:
+        return "gh version", False, "`gh --version` failed"
+    version = match.group(1)
+    code, help_text = m.run(["gh", "api", "--help"])
+    if code != 0 or not GH_SLURP_RE.search(help_text):
+        return (
+            "gh version",
+            False,
+            f"gh {version} has no `api --slurp` (needs 2.48 or later); the allocator fails once a PR is "
+            "open. Install gh from GitHub's apt repository: https://cli.github.com/packages",
+        )
+    return "gh version", True, f"gh {version}, has api --slurp"
 
 
 def _model_key(m: Machine) -> Result:
@@ -150,7 +171,19 @@ def _stop(m: Machine) -> Result:
     return "stop flag", True, "the line is running"
 
 
-CHECKS = (_slot, _unattended, _tools, _model_key, _github, _clone, _plugins, _home, _sandbox, _stop)
+CHECKS = (
+    _slot,
+    _unattended,
+    _tools,
+    _gh_version,
+    _model_key,
+    _github,
+    _clone,
+    _plugins,
+    _home,
+    _sandbox,
+    _stop,
+)
 
 
 def run_checks(m: Machine) -> list[Result]:

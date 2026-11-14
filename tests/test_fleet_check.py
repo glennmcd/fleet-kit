@@ -30,6 +30,8 @@ class Fake:
             self.env["FLEET_REVIEWER_LOGIN"] = "g26work"
         self.tools = {"uv", "claude", "gh", "git", "rtk"}
         self.login = "g26work" if role == "review" else "glennmcd"
+        self.gh_version = "2.104.0"
+        self.gh_slurp = True
         self.porcelain = ""
         self.plugins: str | None = "fleet-kit@fleet-kit\ncc-practices@cc-practices\n"
         self.paths = {f"/home/{slot}/repo/.git"}
@@ -40,6 +42,13 @@ class Fake:
 
     def run(self, command: Sequence[str]) -> tuple[int, str]:
         self.ran.append(list(command))
+        if list(command) == ["gh", "--version"]:
+            return 0, f"gh version {self.gh_version} (2026-11-12)\nhttps://github.com/cli/cli\n"
+        if list(command) == ["gh", "api", "--help"]:
+            flags = "      --paginate   Make additional HTTP requests\n"
+            if self.gh_slurp:
+                flags += "      --slurp[=true|false]   Use with --paginate to return an array\n"
+            return 0, flags
         if command[:3] == ["gh", "api", "user"]:
             return (0, self.login + "\n") if self.login else (1, "")
         if "remote" in command:
@@ -95,7 +104,7 @@ def test_no_token_fails_without_calling_github() -> None:
     del fake.env["GH_TOKEN"]
     ok, detail = results(fake)["github"]
     assert not ok and "GH_TOKEN" in detail
-    assert not any(c[:2] == ["gh", "api"] for c in fake.ran)
+    assert not any(c[:3] == ["gh", "api", "user"] for c in fake.ran)
 
 
 def test_github_refusing_the_token_fails() -> None:
@@ -117,6 +126,26 @@ def test_a_missing_tool_is_named() -> None:
     fake.tools.discard("rtk")
     ok, detail = results(fake)["tools"]
     assert not ok and "rtk" in detail
+
+
+def test_a_gh_that_can_slurp_pages_passes_and_shows_its_version() -> None:
+    assert results(Fake())["gh version"] == (True, "gh 2.104.0, has api --slurp")
+
+
+def test_a_gh_too_old_for_the_allocator_fails_and_says_how_to_fix_it() -> None:
+    # Ubuntu 26.04's own gh package is 2.46: every allocator pass fails once a PR is open.
+    fake = Fake()
+    fake.gh_version, fake.gh_slurp = "2.46.0", False
+    ok, detail = results(fake)["gh version"]
+    assert not ok
+    assert "2.46.0" in detail and "--slurp" in detail and "cli.github.com" in detail
+
+
+def test_a_gh_that_will_not_run_fails_the_version_check() -> None:
+    fake = Fake()
+    fake.tools.discard("gh")
+    fake.gh_version = ""
+    assert not results(fake)["gh version"][0]
 
 
 def test_a_missing_plugin_is_named() -> None:

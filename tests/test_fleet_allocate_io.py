@@ -340,6 +340,17 @@ def test_a_github_failure_ends_the_pass_cleanly(
     assert "fleet_allocate:" in capsys.readouterr().err
 
 
+def test_a_gh_too_old_to_slurp_says_so_in_one_line(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    usage = "unknown flag: --slurp\n\nUsage:  gh api <endpoint> [flags]\n\nFlags:\n      --cache\n"
+    error = subprocess.CalledProcessError(1, ["gh", "api", "--paginate"], stderr=usage)
+    assert run(fleet, BrokenGitHub(error), FakeSystemd()) == 1
+    err = capsys.readouterr().err
+    assert "unknown flag: --slurp" in err and "2.48" in err and "fleet_check" in err
+    assert "Usage:" not in err and len(err.strip().splitlines()) == 1
+
+
 @pytest.mark.parametrize("reply", ["not json", "{}", '{"content": "!!"}'])
 def test_an_unreadable_reply_ends_the_pass_cleanly(fleet: Path, reply: str) -> None:
     class Odd(FakeGitHub):

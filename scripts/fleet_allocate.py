@@ -668,7 +668,14 @@ def main(
                 cfg, fleet_dir, gh, systemctl, rng or random.Random(), args.dry_run, stop_file
             )
     except subprocess.CalledProcessError as exc:
-        err = str(exc.stderr or "").strip()[:300]
+        # gh's first stderr line is the error; the rest is often its usage text.
+        err = next((ln.strip() for ln in str(exc.stderr or "").splitlines() if ln.strip()), "")[
+            :300
+        ]
+        if "--slurp" in err:
+            err += (
+                " (gh is older than 2.48; install it from GitHub's apt repository, see fleet_check)"
+            )
         print(
             f"fleet_allocate: {_command(exc.cmd)} failed: {err}; nothing changed", file=sys.stderr
         )

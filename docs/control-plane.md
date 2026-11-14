@@ -120,6 +120,21 @@ Not set up here yet (the VM setup will do it): `uv`, `claude`, `gh` and `rtk` on
 and cc-practices installed for each slot's user. Without the plugin installed for that user, the hooks do not run.
 Install `uv` where the allocator finds it too: `/usr/local/bin`, or `~/.local/bin` of `fleet-allocator`.
 
+`gh` must be 2.48 or later: the allocator reads a pull request's comments with `gh api --paginate --slurp`.
+Ubuntu's own package is older (26.04 ships 2.46), and with it every pass fails once a pull request is open
+(`unknown flag: --slurp`). Install `gh` from GitHub's apt repository instead; the package keeps its name, so
+apt replaces Ubuntu's:
+
+```bash
+sudo mkdir -p -m 755 /etc/apt/keyrings
+wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install gh
+```
+
+The slot check reports it (`gh version` below).
+
 ## Who needs root
 
 Root sets the machine up (`init`, `add`, the secrets, `systemctl enable`), and nothing after that. Running the
@@ -149,7 +164,7 @@ What fleet-admin does **not** get, because either would make it root by another 
   ```
 
   [`fleet_check.py`](../scripts/fleet_check.py) reports, without printing a secret: the slot's role, the
-  unattended switch, the tools on the PATH, the model key's name, the `gh` login (and that it is
+  unattended switch, the tools on the PATH, that `gh` has `api --slurp` (2.48 or later), the model key's name, the `gh` login (and that it is
   `FLEET_REVIEWER_LOGIN` on a review slot), the clone, both plugins, the home's mode, the sandbox (no write to
   `/var/lib/fleet`, no read of `/etc/fleet`) and the stop flag.
 - **The code.** `/opt/fleet-kit`, the units and the slots' plugins run as the slots or the allocator; they stay
