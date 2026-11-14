@@ -53,7 +53,8 @@ on commitment-tracker-ai's main. The reviewer has its own account, `g26work`, wh
 ## Round 5: control plane (VM)
 
 - VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2), and installs
-  `uv`, `claude`, `gh`, `rtk` and both plugins for each slot's user.
+  `uv`, `claude`, `gh`, `rtk` and both plugins for each slot's user. Written: `docs/vm-setup.md`, a checklist
+  of what was done by hand on the first machine.
 - One clone per agent, with a service unit per slot. Built: `scripts/fleet_slot.py`, `scripts/fleet_agent.py`
   and `systemd/fleet-agent@.service`. Not yet run on a real machine: `systemd-analyze verify` and one slot's
   first run are the operator's.
@@ -88,6 +89,5 @@ round 1 baseline.
 
 ## Also open
 
-- Hook cost: fleet-kit alone now starts four `uv run --script` processes on each Bash call (stop line, write
-  guard, context ceiling, wait cap), before cc-practices' own. Measure it and consider one dispatcher before four
-  author agents run.
+- Hook cost: measured on the fleet machine (2026-11-14), and no dispatcher for four author agents. See
+  *Hook cost* in `docs/control-plane.md`; measure again before going past about a dozen.

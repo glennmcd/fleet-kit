@@ -3,7 +3,7 @@
 What runs a few agents (four authors in round 5) on one Linux machine without them trampling each other, and lets one person stop
 them. This page covers what is built: the stop switch and the write guard, which protect against the rest; the
 slots (an OS user, its clone and its service unit), for authors and for reviewers; who needs root (only setup);
-the allocator that gives them work; and the watchdog. The VM setup follows.
+the allocator that gives them work; and the watchdog. Setting the machine up is in [vm-setup.md](vm-setup.md).
 
 The design is two layers. **Hooks** give an agent a clear refusal and keep it from making honest mistakes.
 **The agent's OS user** is the boundary that holds: each agent runs as its own user, and that user can write
@@ -371,3 +371,27 @@ group for this run only (`SupplementaryGroups=`). The limits are optional keys i
 A long command is not a stall: the `wait_cap` hook holds an agent's waits to about 5 minutes, well under
 `stall_minutes`. An approved pull request that nobody merges for two hours is reported as stuck on every
 run until it is merged; raise `stuck_pr_minutes` if that is noise.
+
+## Hook cost
+
+fleet-kit starts four `uv run --script` processes before each Bash call (stop line, write guard, context
+ceiling, wait cap), and cc-practices starts a fifth. Measured on the fleet machine (8 cores, Python 3.14,
+uv 0.12, 2026-11-14), as the mean of 20 runs with a warm cache:
+
+| Hook | `uv run --script` | `python3` alone |
+|---|---|---|
+| `stop_line.py` | 47 ms | 31 ms |
+| `write_guard.py` | 63 ms | 44 ms |
+| `context_ceiling.py` (a 620 KB transcript) | 60 ms | 40 ms |
+| `wait_cap.py` | 45 ms | 27 ms |
+| cc-practices `practices.py guard-commit` | 79 ms | 66 ms |
+
+Run one after another, fleet-kit's four take about 215 ms of CPU. Started together, as Claude Code starts a
+tool call's hooks, they take 70 ms of wall time. An empty `python3` takes 16 ms, and `uv` adds 15 to 20 ms
+to each hook.
+
+**Decision: no dispatcher for four author agents.** A Bash call that runs a test suite takes seconds and the
+model call around it takes longer, so 70 ms is under 1% of a step. One dispatcher process would save about
+150 ms of CPU per Bash call. Against that, the four hooks stay separate files with separate tests, and one
+that crashes cannot take the stop switch down with it. Measure again before going past about a dozen agents,
+or if hooks start to show in `systemd-cgtop fleet.slice`.
