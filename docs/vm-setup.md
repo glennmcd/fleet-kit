@@ -39,9 +39,9 @@ sudo git clone <the cc-practices repository> /opt/cc-practices-plugin
 ## 3. The machine and the slots
 
 ```bash
-sudo /opt/fleet-kit/scripts/fleet_slot.py init --admin <you> --apply
-sudo /opt/fleet-kit/scripts/fleet_slot.py add agent01 --repo https://github.com/<owner>/<name>.git --apply
-sudo /opt/fleet-kit/scripts/fleet_slot.py add review01 --repo https://github.com/<owner>/<name>.git --apply
+sudo python3 /opt/fleet-kit/scripts/fleet_slot.py init --admin <you> --apply
+sudo python3 /opt/fleet-kit/scripts/fleet_slot.py add agent01 --repo https://github.com/<owner>/<name>.git --apply
+sudo python3 /opt/fleet-kit/scripts/fleet_slot.py add review01 --repo https://github.com/<owner>/<name>.git --apply
 ```
 
 `init` creates the groups, the allocator's user, the `claude` login, `/var/lib/fleet`, the units, the polkit
@@ -104,7 +104,7 @@ into each slot's `~/.claude/plugins/cache`, and a slot keeps running that copy u
 
 ```bash
 sudo git -C /opt/fleet-kit pull --ff-only
-sudo /opt/fleet-kit/scripts/fleet_slot.py init --admin <you> --apply       # when units or the polkit rule changed
+sudo python3 /opt/fleet-kit/scripts/fleet_slot.py init --admin <you> --apply       # when units or the polkit rule changed
 sudo -u agent01 -H claude plugin update fleet-kit@fleet-kit                # per slot, when hooks or skills changed
 ```
 
@@ -114,7 +114,7 @@ directories are kept. Enable any new timer afterwards (step 6).
 ## Adding a slot
 
 ```bash
-sudo /opt/fleet-kit/scripts/fleet_slot.py add agent03 --repo https://github.com/<owner>/<name>.git --apply
+sudo python3 /opt/fleet-kit/scripts/fleet_slot.py add agent03 --repo https://github.com/<owner>/<name>.git --apply
 ```
 
 Then step 5 for the new slot, its check from step 6, and its name in `/etc/fleet/fleet.json`. The allocator
