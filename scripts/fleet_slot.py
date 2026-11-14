@@ -219,7 +219,9 @@ User={ALLOCATOR_USER}
 Slice=fleet.slice
 # Files it writes stay group-writable, so the admins can read and fix them.
 UMask=0002
-Environment=FLEET_CONFIG={ENV_DIR}/fleet.json
+# {ENV_DIR} is root's. systemd reads the config as root and gives the unit a private copy (%d).
+LoadCredential=fleet.json:{ENV_DIR}/fleet.json
+Environment=FLEET_CONFIG=%d/fleet.json
 Environment=GH_NO_UPDATE_NOTIFIER=1
 Environment=PATH={ALLOCATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
 # It only reads GitHub, but without allocator.env it holds the authors' token, which can write. Put a

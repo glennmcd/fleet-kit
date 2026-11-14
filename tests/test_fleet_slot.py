@@ -209,6 +209,15 @@ def test_the_allocator_runs_as_its_own_user_not_root() -> None:
     assert "OnUnitInactiveSec=2min" in timer and "Unit=fleet-allocate.service" in timer
 
 
+def test_the_allocator_gets_its_root_only_config_from_systemd() -> None:
+    # /etc/fleet is root's; the allocator is not. systemd reads the file as root and passes a copy.
+    for name in ("fleet-allocate.service", "fleet-allocate-dry-run.service"):
+        lines = units()[name].splitlines()
+        assert "LoadCredential=fleet.json:/etc/fleet/fleet.json" in lines, name
+        assert "Environment=FLEET_CONFIG=%d/fleet.json" in lines, name
+        assert "Environment=FLEET_CONFIG=/etc/fleet/fleet.json" not in lines, name
+
+
 def test_the_dry_run_is_a_unit_so_admins_never_hold_the_token() -> None:
     real = units()["fleet-allocate.service"].splitlines()
     dry = units()["fleet-allocate-dry-run.service"].splitlines()

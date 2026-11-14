@@ -227,6 +227,10 @@ It reads `/etc/fleet/fleet.json`:
 
 Optional: `in_flight_share` (0.67), `max_runs_per_issue` (4) and `ready_label` (`agent-ready`).
 
+The file sits with the secrets, so it is root's to change (`sudoedit /etc/fleet/fleet.json`). The allocator does
+not run as root: its units pass the file in with `LoadCredential=`, which systemd reads as root and hands to the
+unit as a private copy for that run only.
+
 Each pass:
 
 1. Does nothing while the stop flag exists.
