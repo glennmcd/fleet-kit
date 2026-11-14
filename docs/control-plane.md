@@ -1,6 +1,6 @@
 # Control plane (round 5)
 
-What runs a dozen agents on one Linux machine without them trampling each other, and lets one person stop
+What runs a few agents (four authors in round 5) on one Linux machine without them trampling each other, and lets one person stop
 them. This page covers what is built: the stop switch and the write guard, which protect against the rest; the
 slots (an OS user, its clone and its service unit), for authors and for reviewers; who needs root (only setup);
 and the allocator that gives them work. The watchdog and the VM setup follow.

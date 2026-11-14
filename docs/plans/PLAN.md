@@ -81,12 +81,12 @@ The work queue is GitHub issues written from cc-practices' agent-ready template,
 stop switch and write guard, then clones and the slot unit, then the allocator, then the watchdog, then the VM
 setup. See `docs/control-plane.md`.
 
-*Done when*: about a dozen agents run on the VM with `CC_PRACTICES_UNATTENDED=1` and rtk's hook, each in
+*Done when*: four author agents run on the VM with `CC_PRACTICES_UNATTENDED=1` and rtk's hook, each in
 its own clone, the watchdog and stop switch have been exercised, and `fleet_report.py` has been compared with the
 round 1 baseline.
 
 ## Also open
 
 - Hook cost: fleet-kit alone now starts four `uv run --script` processes on each Bash call (stop line, write
-  guard, context ceiling, wait cap), before cc-practices' own. Measure it and consider one dispatcher before a
-  dozen agents run.
+  guard, context ceiling, wait cap), before cc-practices' own. Measure it and consider one dispatcher before four
+  author agents run.
