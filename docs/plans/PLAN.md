@@ -67,6 +67,9 @@ on commitment-tracker-ai's main. The reviewer has its own account, `g26work`, wh
   `fleet-agent` and `fleet-review`; a polkit rule for the fleet's units; the allocator as `fleet-allocator`;
   check units and a dry-run unit so admins never read a token; slices per role, no limits yet. Built:
   `fleet_slot.py init`, `scripts/fleet_check.py`. Not yet run on a real machine (Ubuntu 26.04).
+- Each agent's steps in the journal, one line per tool call with its exit code, no tool output, tokens masked.
+  Built: `scripts/fleet_stream.py`, tested against two recorded runs (`tests/fixtures/stream/`). The watchdog
+  can read a stall as "no journal line for N minutes".
 - Watchdog: a timer job with no AI that checks for stalled agents, a red main, stuck PRs and failed units, and
   logs each run as caught, clean or missed. A red main sets the stop flag.
 - Stop the line: one switch that halts every agent. Built in v0.4.0: `hooks/stop_line.py` and

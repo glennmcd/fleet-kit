@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import fleet_agent
+import fleet_stream
 import pytest
 from fleet_agent import BAD_ASSIGNMENT, BAD_CONFIG, NOT_READY, STOPPED, run
 
@@ -93,6 +95,30 @@ def test_a_fresh_issue_starts_on_a_new_branch_from_main(env: dict[str, str]) -> 
     assert launch.argv[:2] == ["claude", "-p"]
     assert "#12" in launch.argv[2]
     assert "--dangerously-skip-permissions" in launch.argv
+
+
+def test_the_agent_streams_its_events_so_the_journal_shows_each_step(env: dict[str, str]) -> None:
+    launch = Launch()
+    assert run(env, FakeGit(), launch) == 0
+    assert launch.argv is not None
+    argv = list(launch.argv)
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
+
+
+def test_the_runner_hands_the_agent_to_the_stream_and_returns_its_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_stream(argv: Sequence[str], env: Mapping[str, str]) -> int:
+        seen["argv"], seen["cwd"] = list(argv), os.getcwd()
+        return 7
+
+    monkeypatch.setattr(fleet_stream, "run", fake_stream)
+    monkeypatch.chdir(tmp_path.parent)
+    assert fleet_agent.launch_streaming(str(tmp_path), {})(["claude", "-p", "x"]) == 7
+    assert seen == {"argv": ["claude", "-p", "x"], "cwd": str(tmp_path)}
 
 
 def test_a_local_branch_is_resumed_and_brought_up_to_its_pushed_state(env: dict[str, str]) -> None:

@@ -20,13 +20,15 @@ The units (``fleet-agent@.service`` and ``fleet-review@.service``, from ``script
 6. fetches, and puts the clone where the work is: an author on the branch ``issue/<n>`` (the local one,
    brought up to the pushed one; the pushed one if another slot started it; else a new one from
    ``origin/main``), a reviewer on the pull request's head commit, detached;
-7. replaces itself with ``claude -p``, so systemd watches and stops the agent itself.
+7. starts ``claude -p`` with its events streamed, through ``scripts/fleet_stream.py``, which prints one line
+   per step to the journal and exits with the agent's exit code.
 
 Each prompt is fixed apart from a number that is checked to be a number, so nothing from the assignment
 file reaches the model or a command line as text.
 
-Exit codes: 0 started or idle, 64 the unit's environment is wrong, 65 the assignment is not for this slot,
-70 the clone is not ready, 75 the fleet is stopped.
+Exit codes before the agent starts: 0 idle, 64 the unit's environment is wrong, 65 the assignment is not for
+this slot, 70 the clone is not ready, 75 the fleet is stopped. After it starts: the agent's own exit code, or
+128 plus the signal that ended it.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import fleet_stop
+import fleet_stream
 
 BAD_CONFIG = 64
 BAD_ASSIGNMENT = 65
@@ -210,7 +213,28 @@ def run(env: Mapping[str, str], git: Git, launch: Launch, whoami: WhoAmI = _gh_l
     if problem:
         _say(f"{slot}: {problem}")
         return NOT_READY
-    return launch(["claude", "-p", text, "--dangerously-skip-permissions"])
+    return launch(
+        [
+            "claude",
+            "-p",
+            text,
+            "--dangerously-skip-permissions",
+            # One JSON event per line, which fleet_stream turns into a line per step in the journal.
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]
+    )
+
+
+def launch_streaming(clone: str, env: Mapping[str, str]) -> Launch:
+    """Run the agent in its clone, under fleet_stream, and return its exit code."""
+
+    def launch(argv: Sequence[str]) -> int:
+        os.chdir(clone)
+        return fleet_stream.run(argv, env)
+
+    return launch
 
 
 def main() -> int:
@@ -222,11 +246,7 @@ def main() -> int:
         )
         return done.returncode, done.stdout
 
-    def launch(argv: Sequence[str]) -> int:
-        os.chdir(clone)
-        os.execvp(argv[0], list(argv))  # does not return
-
-    return run(os.environ, git, launch)
+    return run(os.environ, git, launch_streaming(clone, os.environ))
 
 
 if __name__ == "__main__":

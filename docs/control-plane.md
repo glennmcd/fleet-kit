@@ -202,10 +202,38 @@ The units run [`scripts/fleet_agent.py`](../scripts/fleet_agent.py), which check
 
 An author works on the branch `issue/<n>`: the local one, fast-forwarded to the pushed one; the pushed one if
 another slot started it; else a new one from `origin/main`. A local branch that has diverged from the pushed one
-is left for a person. A reviewer checks out the pull request's head commit, detached. Then the script becomes
+is left for a person. A reviewer checks out the pull request's head commit, detached. Then the script starts
 `claude -p` with a fixed prompt for the kind of work (a new issue, a fix round, or cc-practices' `review-pr`
-skill), so systemd watches the agent itself. The agent runs with `--dangerously-skip-permissions`: nobody is
+skill), and exits with the agent's exit code. The agent runs with `--dangerously-skip-permissions`: nobody is
 there to answer a prompt, and the limits are the OS user, the unit's sandbox and the two hooks.
+
+### Watching an agent
+
+The agent's events are streamed ([`fleet_stream.py`](../scripts/fleet_stream.py)), one short line per step, so
+the journal shows a run while it happens:
+
+```bash
+journalctl -u fleet-review@review01 -f -o cat
+```
+
+```
+start model=claude-opus-5-5 claude=2.1.311 session=...
+tool Bash: gh pr diff 43
+  → ok
+tool Bash: uv run pytest -q
+  → exit 1
+tool Bash: git push
+  → denied: This command requires approval
+say: The tests fail on the new parser; reviewing that first.
+done success turns=23 time=6m12s cost=$0.84 in=12 out=9450 cache_read=812345 cache_write=40211
+```
+
+A line shows the tool and its target (a command, a path, a pattern) and how the call ended (`ok`, `exit <n>`,
+`error`, or `denied:` with the reason, which is where a refusal from the write guard or the stop switch shows).
+It never shows a tool's output, a file's body or an edit. Every line is cut short, and the values of the tokens
+in the unit's environment are replaced with `***`. The `done` line carries the run's turns, time, cost and
+tokens; a run that ends without one was stopped or crashed (`stopped by signal 15`). The full record is the
+transcript in the slot's home, `~/.claude/projects/`, which only root can read.
 
 ## The allocator
 
