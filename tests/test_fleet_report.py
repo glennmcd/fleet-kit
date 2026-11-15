@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +259,49 @@ class Report(Fixture):
                 fr.main(["--root", str(self.root), *args])
             self.assertIn(f"| {header} |", out.getvalue())
             self.assertNotIn("Over ceiling", out.getvalue())
+
+    def json_report(self, *args: str) -> dict[str, Any]:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(fr.main([*args, "--json"]), 0)
+        report: dict[str, Any] = json.loads(out.getvalue())
+        return report
+
+    def test_cli_reads_every_root_and_each_may_be_a_pattern(self) -> None:
+        # The report unit reads every slot's transcripts (agentNN, reviewNN) and no one else's.
+        when = "2026-11-10T10:00:00Z"
+        self.write("home/agent01/.claude/projects/p/a.jsonl", [record("a", when)])
+        self.write("home/agent02/.claude/projects/p/b.jsonl", [record("b", when)])
+        self.write("home/review01/.claude/projects/p/c.jsonl", [record("c", when)])
+        self.write("home/bob/.claude/projects/p/d.jsonl", [record("d", when)])
+        home = self.root / "home"
+        report = self.json_report(
+            "--root",
+            f"{home}/agent[0-9][0-9]/.claude/projects",
+            "--root",
+            f"{home}/review[0-9][0-9]/.claude/projects",
+        )
+        self.assertEqual(report["weeks"][0]["requests"], 3)
+
+    def test_project_matches_below_each_root_only(self) -> None:
+        when = "2026-11-10T10:00:00Z"
+        self.write("slotx/projects/-home-agent01-repo/a.jsonl", [record("a", when)])
+        self.write("slotx/projects/-tmp-other/b.jsonl", [record("b", when)])
+        root = str(self.root / "slotx" / "projects")
+        report = self.json_report("--root", root, "--project", "repo")
+        self.assertEqual(report["weeks"][0]["requests"], 1)
+        # The root's own path is not searched: "slotx" is above it.
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(fr.main(["--root", root, "--project", "slotx"]), 1)
+
+    def test_a_missing_prs_file_says_how_to_make_it(self) -> None:
+        self.build()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = fr.main(["--root", str(self.root), "--prs", str(self.root / "none.json")])
+        self.assertEqual(code, 2)
+        self.assertIn("gh pr list --state merged", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
     def test_cli_with_no_transcripts_fails_cleanly(self) -> None:
         empty = os.path.join(self._tmp.name, "empty")

@@ -161,6 +161,20 @@ def transcripts(root: str) -> list[str]:
     return sorted(glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True))
 
 
+def find_transcripts(patterns: Iterable[str], project: str | None = None) -> list[str]:
+    """Transcripts under each root; a root may be a glob pattern, such as /home/agent[0-9][0-9].
+
+    ``project`` keeps the transcripts whose path below their root contains it.
+    """
+    found: set[str] = set()
+    for pattern in patterns:
+        for root in glob.glob(pattern):
+            for path in transcripts(root):
+                if not project or project in os.path.relpath(path, root):
+                    found.add(path)
+    return sorted(found)
+
+
 def by_transcript(requests: Iterable[Request]) -> dict[str, list[Request]]:
     grouped: dict[str, list[Request]] = defaultdict(list)
     for request in requests:
@@ -391,7 +405,12 @@ def render(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--root", default=os.path.expanduser("~/.claude/projects"))
+    parser.add_argument(
+        "--root",
+        action="append",
+        help="a transcripts folder or a glob pattern of folders; repeatable "
+        "(default: ~/.claude/projects)",
+    )
     parser.add_argument("--project", help="only transcripts whose folder name contains this")
     parser.add_argument("--since", help="YYYY-MM-DD; ignore earlier calls")
     parser.add_argument("--prs", help="JSON from gh pr list --state merged --json ...")
@@ -416,16 +435,21 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"unknown price kind {kind!r}; one of {', '.join(prices)}")
         prices[kind] = float(value)
 
-    paths = transcripts(args.root)
-    if args.project:
-        paths = [p for p in paths if args.project in os.path.relpath(p, args.root)]
-    requests = read_requests(paths)
+    roots = args.root or [os.path.expanduser("~/.claude/projects")]
+    requests = read_requests(find_transcripts(roots, args.project))
     if args.since:
         since = datetime.fromisoformat(args.since).date()
         requests = [r for r in requests if r.when.date() >= since]
+    if args.prs and not os.path.isfile(args.prs):
+        print(
+            f"fleet_report: no PR data at {args.prs}; write it with: gh pr list --state merged "
+            "--limit 2000 --json number,headRefName,mergedAt,additions,deletions",
+            file=sys.stderr,
+        )
+        return 2
     prs = read_prs(args.prs, args.line_cap) if args.prs else []
     if not requests:
-        print(f"no requests found under {args.root}", file=sys.stderr)
+        print(f"no requests found under {', '.join(roots)}", file=sys.stderr)
         return 1
 
     weeks = week_rows(requests, prs, prices, args.ceiling, args.ttl)

@@ -84,7 +84,8 @@ ADMIN_UNITS_RE = (
     r"|fleet-check-agent@agent[0-9]{2}\.service"
     r"|fleet-check-review@review[0-9]{2}\.service"
     r"|fleet-allocate\.service|fleet-allocate\.timer|fleet-allocate-dry-run\.service"
-    r"|fleet-watchdog\.service|fleet-watchdog\.timer)"
+    r"|fleet-watchdog\.service|fleet-watchdog\.timer"
+    r"|fleet-report\.service)"
 )
 ADMIN_VERBS = ("start", "stop", "restart", "reset-failed")
 
@@ -304,6 +305,44 @@ PrivateTmp=yes
 """
 
 
+def _report_service(kit: str) -> str:
+    return f"""{HEADER}# The token report over every slot's transcripts, which are mode 600 and owned by the slot. As a member
+# of fleet-admin, write the PR data first (the unit has no network), then start it and read its JSON:
+#   gh pr list --repo <owner>/<name> --state merged --limit 2000 \\
+#     --json number,headRefName,mergedAt,additions,deletions > {FLEET_DIR}/prs.json
+#   systemctl start fleet-report
+#   journalctl -o cat _SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value fleet-report)
+[Unit]
+Description=Fleet token report over the slots' transcripts
+
+[Service]
+Type=oneshot
+# Not root: the allocator's user, with only the right to read past file modes, which the transcripts need.
+User={ALLOCATOR_USER}
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+Slice=fleet.slice
+Environment=PATH={ALLOCATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=UV_OFFLINE=1
+# Fixed arguments: whoever starts it cannot point it at another file. It prints totals per week and
+# branch, never a transcript's text.
+ExecStart=/usr/bin/env uv run --script {kit}/scripts/fleet_report.py --root /home/agent[0-9][0-9]/.claude/projects --root /home/review[0-9][0-9]/.claude/projects --prs {FLEET_DIR}/prs.json --json
+TimeoutStartSec=5min
+# It can read any file, so it gets no secrets and no network, cannot see {ENV_DIR}, and writes only
+# uv's cache.
+InaccessiblePaths={ENV_DIR}
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={ALLOCATOR_HOME}
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+"""
+
+
 WATCHDOG_TIMER = f"""{HEADER}# Enable with the allocator's timer (root): systemctl enable --now fleet-watchdog.timer
 # Pause it as a member of fleet-admin: systemctl stop fleet-watchdog.timer
 [Unit]
@@ -347,6 +386,7 @@ def units(kit: str = DEFAULT_KIT) -> dict[str, str]:
         "fleet-allocate.timer": ALLOCATE_TIMER,
         "fleet-watchdog.service": _watchdog_service(kit),
         "fleet-watchdog.timer": WATCHDOG_TIMER,
+        "fleet-report.service": _report_service(kit),
     }
 
 

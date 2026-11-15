@@ -153,7 +153,7 @@ and the allocator's own user, `fleet-allocator`.
 
 The polkit rule, `/etc/polkit-1/rules.d/50-fleet.rules`, allows `start`, `stop`, `restart` and `reset-failed`
 on `fleet-agent@agentNN`, `fleet-review@reviewNN`, their check units, `fleet-allocate` (service and timer),
-`fleet-allocate-dry-run` and `fleet-watchdog` (service and timer), and on no other unit. Each template takes only its own kind of slot, so an author
+`fleet-allocate-dry-run`, `fleet-watchdog` (service and timer) and `fleet-report`, and on no other unit. Each template takes only its own kind of slot, so an author
 unit cannot be started as a reviewer. Installing or enabling units and reloading systemd stay root's.
 
 What fleet-admin does **not** get, because either would make it root by another name:
@@ -378,6 +378,29 @@ group for this run only (`SupplementaryGroups=`). The limits are optional keys i
 A long command is not a stall: the `wait_cap` hook holds an agent's waits to about 5 minutes, well under
 `stall_minutes`. An approved pull request that nobody merges for two hours is reported as stuck on every
 run until it is merged; raise `stuck_pr_minutes` if that is noise.
+
+## The token report
+
+[`scripts/fleet_report.py`](../scripts/fleet_report.py) measures tokens per week, per branch and per merged
+PR from Claude Code's transcripts. A slot's transcripts are in its home, mode 600, so only root could read
+them all. `fleet-report.service` runs the report for fleet-admin instead:
+
+```bash
+gh pr list --repo glennmcd/commitment-tracker-ai --state merged --limit 2000 \
+  --json number,headRefName,mergedAt,additions,deletions > /var/lib/fleet/prs.json
+systemctl start fleet-report
+journalctl -o cat _SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value fleet-report) > report.json
+```
+
+The unit reads every `agentNN` and `reviewNN` slot's `~/.claude/projects` and the PR data in
+`/var/lib/fleet/prs.json`, and prints the report as JSON to the journal; the last command keeps the latest
+run's output. It has no network, so the PR data is written first, by the admin's own `gh`. Without that file
+it ends with the command to write it.
+
+It runs as `fleet-allocator`, not root, with one capability, `CAP_DAC_READ_SEARCH`, which lets it read past
+file modes. Since it can read any file, everything else is taken away: no secrets, no network, `/etc/fleet`
+hidden, and nothing writable but uv's cache. Its arguments are fixed in the unit, so whoever starts it cannot
+point it at another file, and it prints totals and branch names, never a transcript's text.
 
 ## Hook cost
 

@@ -251,6 +251,32 @@ def test_the_watchdog_runs_as_the_allocators_user_and_can_read_the_journal() -> 
     assert "OnUnitInactiveSec=5min" in timer and "Unit=fleet-watchdog.service" in timer
 
 
+def test_the_report_unit_reads_every_slots_transcripts_and_nothing_leaves() -> None:
+    service = units()["fleet-report.service"].splitlines()
+    assert "Type=oneshot" in service
+    # Not root: the allocator's user, given only the right to read past file modes.
+    assert "User=fleet-allocator" in service
+    assert "AmbientCapabilities=CAP_DAC_READ_SEARCH" in service
+    assert "CapabilityBoundingSet=CAP_DAC_READ_SEARCH" in service
+    assert "NoNewPrivileges=yes" in service
+    # It can read everything, so it gets no secrets, no network and no way to write what it read.
+    assert not any(line.startswith(("EnvironmentFile=", "LoadCredential=")) for line in service)
+    assert "InaccessiblePaths=/etc/fleet" in service
+    assert "PrivateNetwork=yes" in service
+    assert "ProtectSystem=strict" in service and "ProtectHome=read-only" in service
+    assert "ReadWritePaths=/var/lib/fleet-allocator" in service  # uv's cache, nothing else
+    assert "Environment=UV_OFFLINE=1" in service
+    exec_start = next(line for line in service if line.startswith("ExecStart="))
+    # Fixed arguments: an admin starts the unit but cannot point it at another file.
+    assert exec_start.endswith(
+        "/scripts/fleet_report.py"
+        " --root /home/agent[0-9][0-9]/.claude/projects"
+        " --root /home/review[0-9][0-9]/.claude/projects"
+        " --prs /var/lib/fleet/prs.json --json"
+    )
+    assert "%" not in exec_start
+
+
 # --- polkit and sshd ------------------------------------------------------------------------------
 
 
@@ -266,6 +292,7 @@ def test_the_watchdog_runs_as_the_allocators_user_and_can_read_the_journal() -> 
         "fleet-allocate-dry-run.service",
         "fleet-watchdog.service",
         "fleet-watchdog.timer",
+        "fleet-report.service",
     ],
 )
 def test_admins_may_manage_the_fleets_units(unit: str) -> None:
@@ -288,6 +315,8 @@ def test_admins_may_manage_the_fleets_units(unit: str) -> None:
         "fleet-allocate.serviceX",
         "fleet-watchdog@agent01.service",
         "fleet-watchdog.serviceX",
+        "fleet-report@agent01.service",
+        "fleet-report.timer",
     ],
 )
 def test_admins_may_not_manage_any_other_unit(unit: str) -> None:

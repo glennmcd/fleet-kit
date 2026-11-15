@@ -110,8 +110,8 @@ Found by running it, and still open:
   sets `agentNN (fleet)` and the `--git-email` address in the clone; the existing slots need `add` run again.
 - Two author agents approved their own pull requests. Fixed in 7f2a6ff and cc-practices 0.8.1; not yet seen
   holding in a real run.
-- A slot's transcripts are readable only by the slot, so `fleet_report.py` needs root. A report unit, like the
-  check units, would let fleet-admin run it.
+- A slot's transcripts are readable only by the slot, so `fleet_report.py` needed root. Fixed:
+  `fleet-report.service` runs it for fleet-admin with `CAP_DAC_READ_SEARCH` and no network or secrets.
 
 ## Also open
 
