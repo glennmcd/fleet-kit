@@ -90,12 +90,16 @@ round 1 baseline.
 Result (2026-11-15), on the first machine (Ubuntu 26.04, four author slots and one review slot):
 
 - **Ran**: six issues became six merged pull requests (#39, #43, #44, #49, #50, #51 of commitment-tracker-ai),
-  each reviewed by the review slot as `g26work`. Three author agents ran at the same time; the fourth slot
-  passes its check but has had no fourth issue to take.
+  each reviewed by the review slot as `g26work`. On the fleetwright units (after the rename), four author
+  agents ran at the same time on issues 53 to 56 (2026-11-15, from 15:36:53 PST).
 - **Exercised**: the stop switch (the allocator assigns nothing, a slot's check fails, the hook denies a tool
   call, and clearing restores all three) and the watchdog (it caught a stopped allocator timer, and was clean
-  through a full cycle). Not exercised on the machine: a stalled agent, a red main, and the stop flag against
-  an agent in mid-run. Those three have unit tests only.
+  through a full cycle). The stop flag against agents in mid-run (2026-11-15): set while four agents worked,
+  three were refused on their next tool call and ended within a minute, each saying what it left uncommitted.
+  The fourth had started a one-minute `gh pr checks --watch` three seconds before the flag; the hook checks a
+  call when it starts, so that call finished and the agent ended with its PR opened. While the flag stood the
+  allocator assigned nothing; after clearing it gave the unfinished issues out again. Not exercised on the
+  machine: a stalled agent and a red main, which have unit tests only.
 - **Compared**: about 255,000 weighted tokens per merged PR, reviews included, against the baseline's 925,000.
   Median context 26,500 against 92,500 to 171,000, and no call at 150k or more. Per changed line the fleet is
   about 4,350 against 870, because five of the six PRs changed 2 to 24 lines; the one of ordinary size cost
