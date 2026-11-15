@@ -382,13 +382,17 @@ uv 0.12, 2026-11-14), as the mean of 20 runs with a warm cache:
 |---|---|---|
 | `stop_line.py` | 47 ms | 31 ms |
 | `write_guard.py` | 63 ms | 44 ms |
-| `context_ceiling.py` (a 620 KB transcript) | 60 ms | 40 ms |
+| `context_ceiling.py` | 60 ms | 40 ms |
 | `wait_cap.py` | 45 ms | 27 ms |
 | cc-practices `practices.py guard-commit` | 79 ms | 66 ms |
 
 Run one after another, fleet-kit's four take about 215 ms of CPU. Started together, as Claude Code starts a
 tool call's hooks, they take 70 ms of wall time. An empty `python3` takes 16 ms, and `uv` adds 15 to 20 ms
 to each hook.
+
+One number is a lower bound. The measuring login cannot read a slot's transcripts (mode 600), so
+`context_ceiling.py` ran without one. On a slot it also reads the session's transcript, which was 200 to
+600 KB in the first runs.
 
 **Decision: no dispatcher for four author agents.** A Bash call that runs a test suite takes seconds and the
 model call around it takes longer, so 70 ms is under 1% of a step. One dispatcher process would save about
