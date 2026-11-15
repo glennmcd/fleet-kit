@@ -7,6 +7,7 @@ import json
 import random
 import subprocess
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,10 @@ import pytest
 
 REPO = "o/r"
 SHA = "a" * 40
+FIXTURES = Path(__file__).parent / "fixtures" / "allocate"
+NOW = datetime(
+    2026, 11, 15, 18, 6, 33, tzinfo=UTC
+).timestamp()  # the pass that gave issue 46 out again
 DONE = "## Done when\n\n- [ ] it works\n"
 
 
@@ -29,8 +34,10 @@ class FakeGitHub:
         pulls: list[dict[str, Any]] | None = None,
         comments: dict[int, list[dict[str, Any]]] | None = None,
         reviewers: tuple[str, ...] = ("g26work",),
+        closed: list[dict[str, Any]] | None = None,
     ) -> None:
         self.issues = issues or []
+        self.closed = closed or []
         self.pulls = pulls or []
         self.comments = comments or {}
         self.reviewers = list(reviewers)
@@ -44,6 +51,8 @@ class FakeGitHub:
         if args[:2] == ["pr", "list"]:
             return json.dumps(self.pulls)
         path = args[-1]
+        if path.startswith(f"repos/{REPO}/pulls?state=closed"):
+            return json.dumps(self.closed)
         if path.endswith("/contents/.fleet-gates.json"):
             body = json.dumps({"verdict": {"reviewers": self.reviewers}}).encode()
             return json.dumps({"content": base64.b64encode(body).decode()})
@@ -129,6 +138,7 @@ def run(fleet: Path, gh: FakeGitHub, systemd: FakeSystemd, *extra: str) -> int:
         gh=gh,
         systemctl=systemd,
         rng=random.Random(1),
+        now=lambda: NOW,
     )
 
 
@@ -252,6 +262,63 @@ def test_state_carries_over_between_passes(fleet: Path) -> None:
     run(
         fleet, gh, systemd
     )  # the review ran but posted nothing: the same head is not reviewed again
+    assert systemd.started == []
+
+
+def closed_pulls() -> list[dict[str, Any]]:
+    data: list[dict[str, Any]] = json.loads(
+        (FIXTURES / "closed_pulls.json").read_text(encoding="utf-8")
+    )
+    return [{**p, "head": {**p["head"], "repo": {"full_name": REPO}}} for p in data]
+
+
+def test_an_issue_whose_pr_just_merged_is_not_given_out(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Issue 46's PR 51 merged five seconds ago; the issue listing still shows 46 open.
+    gh = FakeGitHub(issues=[issue(46), issue(52)], closed=closed_pulls())
+    systemd = FakeSystemd()
+    run(fleet, gh, systemd)
+    assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 52\n"
+    assert not (fleet / "slots" / "agent02").exists()
+    assert "#46" in capsys.readouterr().out
+
+
+def test_a_merge_older_than_the_window_does_not_block_a_reopened_issue(fleet: Path) -> None:
+    gh = FakeGitHub(issues=[issue(46)], closed=closed_pulls())
+    systemd = FakeSystemd()
+    hour = 60 * 60
+    fleet_allocate.main(
+        ["--config", str(fleet / "fleet.json"), "--fleet-dir", str(fleet)],
+        gh=gh,
+        systemctl=systemd,
+        rng=random.Random(1),
+        now=lambda: NOW + hour,
+    )
+    assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 46\n"
+
+
+def test_a_pr_closed_without_merging_does_not_block_its_issue(fleet: Path) -> None:
+    closed = closed_pulls()
+    closed[1] = {**closed[1], "merged_at": None}  # PR 51, issue 46
+    run(fleet, FakeGitHub(issues=[issue(46)], closed=closed), FakeSystemd())
+    assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 46\n"
+
+
+def test_the_closed_pr_read_is_one_page_sorted_by_last_update(fleet: Path) -> None:
+    gh = FakeGitHub(issues=[issue(3)])
+    run(fleet, gh, FakeSystemd())
+    reads = [c for c in gh.calls if c[0] == "api" and "pulls?" in c[-1]]
+    assert reads == [
+        ["api", f"repos/{REPO}/pulls?state=closed&sort=updated&direction=desc&per_page=50"]
+    ]
+
+
+def test_a_closed_pr_page_full_of_recent_merges_stops_the_pass(fleet: Path) -> None:
+    recent = closed_pulls()[1]
+    gh = FakeGitHub(issues=[issue(3)], closed=[recent] * 50)
+    systemd = FakeSystemd()
+    assert run(fleet, gh, systemd) == 1
     assert systemd.started == []
 
 

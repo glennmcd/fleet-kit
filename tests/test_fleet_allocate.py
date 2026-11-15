@@ -232,6 +232,16 @@ def test_an_issue_with_an_open_pr_is_in_flight_not_new() -> None:
     assert result.assignments == []
 
 
+def test_an_issue_whose_pr_just_merged_is_not_new_work() -> None:
+    # GitHub's issue listing can still show an issue open a few seconds after its PR merged.
+    cfg = config()
+    result = plan(
+        cfg, free(cfg), [issue(46), issue(47)], [], State(), random.Random(1), merged={46: 51}
+    )
+    assert assigned(result) == {"agent01": "issue 47"}
+    assert any("#46" in n and "#51" in n for n in result.notes)
+
+
 def test_an_issue_or_pr_a_busy_slot_holds_is_not_given_out_again() -> None:
     cfg = config()
     slots = free(cfg)

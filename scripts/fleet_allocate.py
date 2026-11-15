@@ -14,8 +14,9 @@ There are three kinds of work, all read from GitHub:
   to a fix round, since a review of a red PR only repeats what CI says.
 - fix: such a pull request with failing checks, a merge conflict, or a ``request_changes`` verdict at its head.
 - issue: an open issue labelled ``agent-ready`` and ``lane:<name>``, with a filled-in *Done when* list, no
-  assignee and no open pull request. The lane is drawn by weight among the lanes that have work; within a lane
-  the oldest issue goes first.
+  assignee, no open pull request and no pull request merged in the last ``MERGE_WINDOW`` seconds (GitHub's issue
+  listing can show an issue open for a few seconds after its pull request closed it). The lane is drawn by
+  weight among the lanes that have work; within a lane the oldest issue goes first.
 
 Author slots (``agentNN``) take fix rounds and new issues. Two thirds of them (``in_flight_share``) are kept for
 fix rounds, counting the slots already busy with one; a share left unused goes to the other kind, so no slot
@@ -47,9 +48,11 @@ import random
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -248,7 +251,10 @@ def plan(
     pulls: Sequence[Pull],
     state: State,
     rng: random.Random,
+    merged: Mapping[int, int] | None = None,
 ) -> Plan:
+    """``merged`` maps an issue number to the pull request that merged for it moments ago."""
+    merged = merged or {}
     state = copy.deepcopy(state)
     notes: list[str] = []
     held_issues = {s.assignment.issue_key for s in slots if s.state != "free" and s.assignment} - {
@@ -303,6 +309,11 @@ def plan(
             or i.number in in_flight_issues
             or i.number in held_issues
         ):
+            continue
+        if i.number in merged:
+            notes.append(
+                f"issue #{i.number} is still listed open but PR #{merged[i.number]} merged; skipped"
+            )
             continue
         lane = _lane(i, cfg)
         why = (
@@ -386,6 +397,8 @@ Systemctl = Callable[[Sequence[str]], tuple[int, str]]
 
 ISSUE_LIMIT = 200
 PULL_LIMIT = 100
+CLOSED_LIMIT = 50
+MERGE_WINDOW = 30 * 60  # seconds
 BUSY = {"active", "activating", "deactivating", "reloading", "refreshing"}
 
 
@@ -549,6 +562,39 @@ def fetch_pulls(cfg: Config, reviewers: list[str], gh: Gh) -> list[Pull]:
     return pulls
 
 
+def _epoch(stamp: str) -> float:
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+
+
+def fetch_merged(cfg: Config, gh: Gh, now: float) -> dict[int, int]:
+    """Issues whose ``issue/<n>`` PR merged in the last ``MERGE_WINDOW`` seconds, mapped to that PR.
+
+    Read from the REST pull list sorted by last update, which shows a merge at once; ``gh pr list`` sorts by
+    creation, and the search API lags as the issue listing does.
+    """
+    raw = json.loads(
+        gh(
+            [
+                "api",
+                f"repos/{cfg.repo}/pulls?state=closed&sort=updated&direction=desc&per_page={CLOSED_LIMIT}",
+            ]
+        )
+    )
+    since = now - MERGE_WINDOW
+    if len(raw) >= CLOSED_LIMIT and _epoch(str(raw[-1].get("updated_at") or "")) >= since:
+        raise PassError(
+            f"{len(raw)} pull requests closed in the last {MERGE_WINDOW // 60} minutes; "
+            "some merges would be missed"
+        )
+    merged: dict[int, int] = {}
+    for p in raw:
+        m = BRANCH_RE.fullmatch(str((p.get("head") or {}).get("ref") or ""))
+        stamp = p.get("merged_at")
+        if m and stamp and _epoch(str(stamp)) >= since:
+            merged.setdefault(int(m.group(1)), int(p["number"]))
+    return merged
+
+
 def load_state(path: Path) -> State:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -596,6 +642,7 @@ def run_pass(
     rng: random.Random,
     dry_run: bool,
     stop_file: Path,
+    now: float,
 ) -> int:
     note = fleet_stop.status(stop_file)
     if note is not None:
@@ -607,13 +654,14 @@ def run_pass(
     state = load_state(fleet_dir / "state.json")
     reviewers = fetch_reviewers(cfg.repo, gh)
     pulls = fetch_pulls(cfg, reviewers, gh)
+    merged = fetch_merged(cfg, gh, now)  # before the issues, so a merge between the reads is seen
     issues = fetch_issues(cfg, gh)
 
     finished = [s for s in slots if s.state == "free" and s.assignment]
     for s in finished:
         print(f"{s.name} finished {s.assignment.text() if s.assignment else ''}")
     slots = [Slot(s.name, s.role, s.state, None) if s.state == "free" else s for s in slots]
-    result = plan(cfg, slots, issues, pulls, state, rng)
+    result = plan(cfg, slots, issues, pulls, state, rng, merged)
     for line in result.notes:
         print(f"note: {line}")
     for slot, a in result.assignments:
@@ -651,6 +699,7 @@ def main(
     gh: Gh = _gh,
     systemctl: Systemctl = _systemctl,
     rng: random.Random | None = None,
+    now: Callable[[], float] = time.time,
 ) -> int:
     parser = argparse.ArgumentParser(prog="fleet_allocate")
     parser.add_argument("--config", default=os.environ.get("FLEET_CONFIG") or DEFAULT_CONFIG)
@@ -667,7 +716,14 @@ def main(
     try:
         with _lock(fleet_dir / "allocate.lock"):
             return run_pass(
-                cfg, fleet_dir, gh, systemctl, rng or random.Random(), args.dry_run, stop_file
+                cfg,
+                fleet_dir,
+                gh,
+                systemctl,
+                rng or random.Random(),
+                args.dry_run,
+                stop_file,
+                now(),
             )
     except subprocess.CalledProcessError as exc:
         # gh's first stderr line is the error; the rest is often its usage text.

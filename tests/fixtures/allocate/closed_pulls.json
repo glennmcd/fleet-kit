@@ -1,0 +1,6 @@
+[
+ {"number": 50, "state": "closed", "merged_at": "2026-11-15T18:06:45Z", "closed_at": "2026-11-15T18:06:45Z", "updated_at": "2026-11-15T18:06:46Z", "head": {"ref": "issue/47", "repo": {"full_name": "glennmcd/commitment-tracker-ai"}}},
+ {"number": 51, "state": "closed", "merged_at": "2026-11-15T18:06:28Z", "closed_at": "2026-11-15T18:06:28Z", "updated_at": "2026-11-15T18:06:28Z", "head": {"ref": "issue/46", "repo": {"full_name": "glennmcd/commitment-tracker-ai"}}},
+ {"number": 49, "state": "closed", "merged_at": "2026-11-15T18:05:46Z", "closed_at": "2026-11-15T18:05:46Z", "updated_at": "2026-11-15T18:05:51Z", "head": {"ref": "issue/48", "repo": {"full_name": "glennmcd/commitment-tracker-ai"}}},
+ {"number": 45, "state": "closed", "merged_at": "2026-11-14T22:19:24Z", "closed_at": "2026-11-14T22:19:24Z", "updated_at": "2026-11-14T22:19:28Z", "head": {"ref": "docs/trim-claude-md", "repo": {"full_name": "glennmcd/commitment-tracker-ai"}}}
+]

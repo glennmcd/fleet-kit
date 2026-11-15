@@ -286,7 +286,10 @@ Each pass:
      review, since that review would only repeat what CI says.
 4. Picks new issues: open, labelled `agent-ready` and one `lane:<name>` from the config, with a *Done when* list
    that has a filled-in checkbox, no assignee and no open PR. The lane is a weighted draw among lanes that have
-   work; within a lane, the oldest issue goes first.
+   work; within a lane, the oldest issue goes first. An issue whose `issue/<n>` PR merged in the last 30 minutes
+   is skipped: GitHub's issue listing can show it open for a few seconds after the merge closed it, and one pass
+   gave such an issue out again. The merges are read from the closed PRs sorted by last update, which shows a
+   merge at once.
 5. Fills author slots. Two thirds of them (`in_flight_share`, counting slots already on a fix round) are kept
    for fix rounds and the rest for new issues; a share left unused goes to the other kind.
 6. Writes `/var/lib/fleet/slots/<slot>` and starts the slot's unit.
@@ -306,7 +309,7 @@ systemctl stop fleet-allocate.timer                           # fleet-admin: pau
 `fleet-allocate-dry-run` runs `fleet_allocate.py --dry-run` as the allocator, with its token, so whoever starts it
 never holds the token. It prints what a pass would assign and changes nothing. A pass does every read before it writes
 anything: if `systemctl` gives an answer it does not know, a GitHub call fails or times out, a listing reaches its
-limit (200 issues, 100 pull requests), or `state.json` is unreadable, it ends with nothing changed. A unit that
+limit (200 issues, 100 open pull requests, 50 pull requests closed within the merge window), or `state.json` is unreadable, it ends with nothing changed. A unit that
 fails to start gives its work back and is not counted as a run.
 
 Only pull requests from branches of the repository itself are handed out. A fork can name its branch
