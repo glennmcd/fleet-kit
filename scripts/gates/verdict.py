@@ -145,7 +145,9 @@ def decide(
         )
     hint = f" The latest verdict is for {valid[-1][2].sha[:7]}, an earlier commit." if valid else ""
     return Decision(
-        "failure", "No verdict at head", f"No verdict for head {short}.{hint} Run the review again."
+        "failure",
+        "No verdict at head",
+        f"No verdict for head {short}.{hint} It needs a review by an account in `verdict.reviewers`; the author cannot post it.",
     )
 
 

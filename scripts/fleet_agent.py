@@ -64,8 +64,9 @@ def issue_prompt(issue: int) -> str:
         "Its Done when list is your approval and your definition of finished. "
         f"You are on the branch issue/{issue}; commit there, push it, and open a pull request that "
         "closes the issue, or continue the one that is open. "
-        "Stop when the pull request's checks pass and it is ready for review, or write a handoff "
-        "if you cannot finish."
+        "Stop when every check except `reviewer-verdict` passes, or write a handoff if you cannot "
+        "finish. `reviewer-verdict` stays red until the fleet's reviewer posts its verdict: that is "
+        "not yours to pass. Do not post review verdicts and do not run the review-pr skill."
     )
 
 
@@ -75,8 +76,9 @@ def fix_prompt(issue: int) -> str:
         "its checks fail, it conflicts with main, or the reviewer requested changes. You are on that "
         f"branch. Read `gh pr view issue/{issue} --comments` and `gh pr checks issue/{issue}`, and the "
         "issue's Done when list. Fix what they report, merge main if it conflicts, and push to the same "
-        "branch. Do not post review verdicts. Stop when the checks pass, or write a handoff if you "
-        "cannot finish."
+        "branch. Stop when every check except `reviewer-verdict` passes, or write a handoff if you "
+        "cannot finish. `reviewer-verdict` stays red until the fleet's reviewer posts its verdict: that "
+        "is not yours to pass. Do not post review verdicts and do not run the review-pr skill."
     )
 
 

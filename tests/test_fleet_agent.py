@@ -313,3 +313,13 @@ def test_each_prompt_is_fixed_apart_from_its_number() -> None:
         assert make(7).replace("7", "N") == make(12).replace("12", "N")
     assert "Done when" in fleet_agent.issue_prompt(7)
     assert "do not change" in fleet_agent.review_prompt(7).lower()
+
+
+def test_an_author_is_told_the_verdict_check_is_not_its_to_pass() -> None:
+    # Two authors once saw `reviewer-verdict` red on their own pull requests and approved them.
+    for make in (fleet_agent.issue_prompt, fleet_agent.fix_prompt):
+        text = make(7)
+        assert "`reviewer-verdict`" in text
+        assert "Do not post review verdicts" in text
+        assert "review-pr" in text
+    assert "checks pass and it is ready for review" not in fleet_agent.issue_prompt(7)
