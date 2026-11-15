@@ -6,13 +6,13 @@
 
 When the flag file exists, every tool call of every agent is refused with the reason written in the
 file. The agent can still answer in text, so it can say why it stopped, but it can do nothing. Delete
-the file (``scripts/fleet_stop.py clear``) and the next tool call runs again.
+the file (``scripts/fleetwright_stop.py clear``) and the next tool call runs again.
 
-The hook only acts on a fleet agent: ``FLEET_CLONE`` or ``FLEET_STOP_FILE`` must be set, which the
+The hook only acts on a fleet agent: ``FLEETWRIGHT_CLONE`` or ``FLEETWRIGHT_STOP_FILE`` must be set, which the
 agent's service unit does. On a desktop where neither is set it does nothing, so installing the plugin
 there never blocks anything.
 
-The flag file is ``FLEET_STOP_FILE``, default ``/var/lib/fleet/STOP``. A safety hook fails closed: if
+The flag file is ``FLEETWRIGHT_STOP_FILE``, default ``/var/lib/fleetwright/STOP``. A safety hook fails closed: if
 the file cannot be checked or the hook crashes, the call is refused.
 """
 
@@ -23,16 +23,16 @@ import os
 import sys
 from typing import Any
 
-DEFAULT_STOP_FILE = "/var/lib/fleet/STOP"
+DEFAULT_STOP_FILE = "/var/lib/fleetwright/STOP"
 REASON_BYTES = 500
 
 
 def stop_file() -> str | None:
     """The flag file's path, or None when this is not a fleet agent."""
-    explicit = os.environ.get("FLEET_STOP_FILE")
+    explicit = os.environ.get("FLEETWRIGHT_STOP_FILE")
     if explicit:
         return explicit
-    return DEFAULT_STOP_FILE if os.environ.get("FLEET_CLONE") else None
+    return DEFAULT_STOP_FILE if os.environ.get("FLEETWRIGHT_CLONE") else None
 
 
 def deny(reason: str) -> dict[str, Any]:

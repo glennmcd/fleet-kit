@@ -1,4 +1,4 @@
-# fleet-kit
+# fleetwright
 
 Building blocks for running a fleet of Claude Code agents without losing control of the code or the
 token budget. Rebuilt from Alexander Marquardt's two articles, round by round, as a Claude Code plugin
@@ -17,7 +17,7 @@ installed from a directory marketplace (same setup as `cc-practices-plugin`).
 | `hooks/wait_cap.py` | `PreToolUse` on Bash: a sub-agent may not wait in the foreground past the 5-minute prompt cache (270 s cap) | agent-fleet-kit, vendored |
 | `scripts/session_tokens.py` | Tokens per session, one count per request | agent-fleet-kit, vendored |
 | `scripts/first_context.py` | What a session's first model call carried (system prompt, SessionStart output, CLAUDE.md, skill and tool listings), part by part, largest first | new |
-| `scripts/fleet_report.py` | Tokens per ISO week, per merged PR and per changed line, price-weighted, as an index against a baseline; cache-expiry share, context distribution, first-turn cost, top branches | new |
+| `scripts/fleetwright_report.py` | Tokens per ISO week, per merged PR and per changed line, price-weighted, as an index against a baseline; cache-expiry share, context distribution, first-turn cost, top branches | new |
 
 Both hooks judge sub-agents only and fail open. The vendored files are unchanged apart from a
 `uv run --script` header; see [NOTICE.md](NOTICE.md).
@@ -27,8 +27,8 @@ Both hooks judge sub-agents only and fail open. The vendored files are unchanged
 Requires `uv` on `PATH` (the hooks run with `uv run --script`, standard library only).
 
 ```bash
-claude plugin marketplace add <path-to-your-fleet-kit-clone>      # e.g. ~/src/fleet-kit, or the VM path
-claude plugin install fleet-kit@fleet-kit --scope local
+claude plugin marketplace add <path-to-your-fleetwright-clone>      # e.g. ~/src/fleetwright, or the VM path
+claude plugin install fleetwright@fleetwright --scope local
 ```
 
 Thresholds are environment variables: `CONTEXT_ADVISORY_TOKENS` (150000), `CONTEXT_CEILING_TOKENS`
@@ -52,8 +52,8 @@ Take a baseline before changing anything, then compare each change against it:
 ```bash
 gh pr list --state merged --limit 2000 \
   --json number,headRefName,mergedAt,additions,deletions > prs.json
-uv run --script scripts/fleet_report.py --prs prs.json --project commitment-tracker-ai --since 2026-10-01
-uv run --script scripts/fleet_report.py --prs prs.json --baseline 2026-W45,2026-W46 --json
+uv run --script scripts/fleetwright_report.py --prs prs.json --project commitment-tracker-ai --since 2026-10-01
+uv run --script scripts/fleetwright_report.py --prs prs.json --baseline 2026-W45,2026-W46 --json
 ```
 
 How to read it:
@@ -82,7 +82,7 @@ The first prints each part of the first call's context with its size; `--show` p
 parts whose name matches (here, cc-practices' core rules). `--subagent` reads the newest sub-agent's
 transcript instead: sub-agents get no SessionStart output, so cc-practices gives them its rules through a
 `SubagentStart` hook. Tool definitions are not recorded, so the total
-is lower than the 1st-turn tokens in `fleet_report.py`. To preview cc-practices' part without a session,
+is lower than the 1st-turn tokens in `fleetwright_report.py`. To preview cc-practices' part without a session,
 run its hook directly from the project folder:
 
 ```bash
@@ -112,7 +112,7 @@ claude plugin validate .
 
 Six checks every agent PR must pass, run as one reusable GitHub Actions workflow
 ([`gates.yml`](.github/workflows/gates.yml)). Each is a standard-library Python script in
-[`scripts/gates/`](scripts/gates), configured by a `.fleet-gates.json` in the calling repository, and each
+[`scripts/gates/`](scripts/gates), configured by a `.fleetwright-gates.json` in the calling repository, and each
 has an evasion kit in `tests/test_evasion_*.py`. Details, config and how to call it: [docs/gates.md](docs/gates.md).
 
 | Gate | Fails when |
@@ -135,17 +135,17 @@ mode and the posting helper) is in cc-practices.
 ## Round 5: control plane (in progress)
 
 Two hooks that protect against the rest, built first: [`stop_line.py`](hooks/stop_line.py) refuses every tool
-call while one flag file exists (`scripts/fleet_stop.py stop`), and [`write_guard.py`](hooks/write_guard.py)
-refuses writes outside the agent's own clone. Both act only on a fleet agent (`FLEET_CLONE` set), so installing
+call while one flag file exists (`scripts/fleetwright_stop.py stop`), and [`write_guard.py`](hooks/write_guard.py)
+refuses writes outside the agent's own clone. Both act only on a fleet agent (`FLEETWRIGHT_CLONE` set), so installing
 the plugin on a desktop changes nothing. A slot is an OS user with one clone:
-[`fleet_slot.py`](scripts/fleet_slot.py) creates it, and the template unit
-[`fleet-agent@.service`](systemd/fleet-agent@.service) runs [`fleet_agent.py`](scripts/fleet_agent.py), which
+[`fleetwright_slot.py`](scripts/fleetwright_slot.py) creates it, and the template unit
+[`fleetwright-agent@.service`](systemd/fleetwright-agent@.service) runs [`fleetwright_agent.py`](scripts/fleetwright_agent.py), which
 starts a headless agent on the slot's assignment. Review slots run the same way with the reviewer's own GitHub
-account. [`fleet_allocate.py`](scripts/fleet_allocate.py), on a timer, gives free slots their next review, fix round
-or new issue from GitHub, by weighted lanes. Root only sets the machine up (`fleet_slot.py init`, then `add` per
-slot); after that the `fleet-admin` group runs the fleet through a polkit rule, without reading its tokens, and
-[`fleet_check.py`](scripts/fleet_check.py) checks a slot from a unit that runs as it.
-[`fleet_watchdog.py`](scripts/fleet_watchdog.py), also on a timer and with no AI, reports stalled agents, stuck
+account. [`fleetwright_allocate.py`](scripts/fleetwright_allocate.py), on a timer, gives free slots their next review, fix round
+or new issue from GitHub, by weighted lanes. Root only sets the machine up (`fleetwright_slot.py init`, then `add` per
+slot); after that the `fleetwright-admin` group runs the fleet through a polkit rule, without reading its tokens, and
+[`fleetwright_check.py`](scripts/fleetwright_check.py) checks a slot from a unit that runs as it.
+[`fleetwright_watchdog.py`](scripts/fleetwright_watchdog.py), also on a timer and with no AI, reports stalled agents, stuck
 pull requests and failed units, and stops the line when main is red. The design (hooks for clear
 refusals, an OS user per agent for the boundary that holds) and what the write guard cannot see:
 [docs/control-plane.md](docs/control-plane.md).

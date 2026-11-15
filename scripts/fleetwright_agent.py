@@ -4,15 +4,15 @@
 # ///
 """What a slot's service unit runs: check the slot is fit to start, then become a headless agent.
 
-The units (``fleet-agent@.service`` and ``fleet-review@.service``, from ``scripts/fleet_slot.py``) set
-``FLEET_SLOT``, ``FLEET_ROLE`` and ``FLEET_CLONE``. In order, this script:
+The units (``fleetwright-agent@.service`` and ``fleetwright-review@.service``, from ``scripts/fleetwright_slot.py``) set
+``FLEETWRIGHT_SLOT``, ``FLEETWRIGHT_ROLE`` and ``FLEETWRIGHT_CLONE``. In order, this script:
 
 1. checks the slot's name and role agree: ``agentNN`` is an author, ``reviewNN`` a reviewer;
-2. refuses to start while the stop flag exists (``scripts/fleet_stop.py``);
-3. for a reviewer, checks that ``gh`` is signed in as ``FLEET_REVIEWER_LOGIN``, so a verdict can never be
+2. refuses to start while the stop flag exists (``scripts/fleetwright_stop.py``);
+3. for a reviewer, checks that ``gh`` is signed in as ``FLEETWRIGHT_REVIEWER_LOGIN``, so a verdict can never be
    posted as the author's account (for example when ``reviewer.env`` sets ``GITHUB_TOKEN``, which ``gh``
    ranks below the author's ``GH_TOKEN``);
-4. reads the slot's assignment from ``/var/lib/fleet/slots/<slot>``, written by ``scripts/fleet_allocate.py``:
+4. reads the slot's assignment from ``/var/lib/fleetwright/slots/<slot>``, written by ``scripts/fleetwright_allocate.py``:
    ``issue <n>`` or ``fix <n>`` for an author, ``review <pr>`` for a reviewer. No file means the slot is idle,
    which is not a failure;
 5. refuses a clone with uncommitted changes. A previous run left them; discarding them is a person's
@@ -20,7 +20,7 @@ The units (``fleet-agent@.service`` and ``fleet-review@.service``, from ``script
 6. fetches, and puts the clone where the work is: an author on the branch ``issue/<n>`` (the local one,
    brought up to the pushed one; the pushed one if another slot started it; else a new one from
    ``origin/main``), a reviewer on the pull request's head commit, detached;
-7. starts ``claude -p`` with its events streamed, through ``scripts/fleet_stream.py``, which prints one line
+7. starts ``claude -p`` with its events streamed, through ``scripts/fleetwright_stream.py``, which prints one line
    per step to the journal and exits with the agent's exit code.
 
 Each prompt is fixed apart from a number that is checked to be a number, so nothing from the assignment
@@ -40,15 +40,15 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-import fleet_stop
-import fleet_stream
+import fleetwright_stop
+import fleetwright_stream
 
 BAD_CONFIG = 64
 BAD_ASSIGNMENT = 65
 NOT_READY = 70
 STOPPED = 75
 
-DEFAULT_SLOTS_DIR = "/var/lib/fleet/slots"
+DEFAULT_SLOTS_DIR = "/var/lib/fleetwright/slots"
 BASE = "origin/main"
 ROLES = {"author": re.compile(r"agent[0-9]{2}"), "review": re.compile(r"review[0-9]{2}")}
 ASSIGNMENT_RE = re.compile(r"(issue|fix|review) ([1-9][0-9]{0,8})")
@@ -92,7 +92,7 @@ def review_prompt(pr: int) -> str:
 
 
 def _say(message: str) -> None:
-    print(f"fleet_agent: {message}", file=sys.stderr)
+    print(f"fleetwright_agent: {message}", file=sys.stderr)
 
 
 def read_assignment(path: Path) -> tuple[str, int] | None:
@@ -163,26 +163,26 @@ def _gh_login() -> str | None:
 
 
 def run(env: Mapping[str, str], git: Git, launch: Launch, whoami: WhoAmI = _gh_login) -> int:
-    slot = env.get("FLEET_SLOT", "")
-    role = env.get("FLEET_ROLE", "")
-    clone = env.get("FLEET_CLONE", "")
+    slot = env.get("FLEETWRIGHT_SLOT", "")
+    role = env.get("FLEETWRIGHT_ROLE", "")
+    clone = env.get("FLEETWRIGHT_CLONE", "")
     if role not in ROLES or not ROLES[role].fullmatch(slot) or not clone:
         _say(
-            "FLEET_SLOT, FLEET_ROLE and FLEET_CLONE must be set by the service unit, and agree: "
+            "FLEETWRIGHT_SLOT, FLEETWRIGHT_ROLE and FLEETWRIGHT_CLONE must be set by the service unit, and agree: "
             "an agentNN slot is an author, a reviewNN slot a reviewer"
         )
         return BAD_CONFIG
 
-    stop_file = Path(env.get("FLEET_STOP_FILE") or fleet_stop.DEFAULT_STOP_FILE)
-    note = fleet_stop.status(stop_file)
+    stop_file = Path(env.get("FLEETWRIGHT_STOP_FILE") or fleetwright_stop.DEFAULT_STOP_FILE)
+    note = fleetwright_stop.status(stop_file)
     if note is not None:
         _say(f"the fleet is stopped, not starting: {note}")
         return STOPPED
 
     if role == "review":
-        expected = env.get("FLEET_REVIEWER_LOGIN", "")
+        expected = env.get("FLEETWRIGHT_REVIEWER_LOGIN", "")
         if not expected:
-            _say("FLEET_REVIEWER_LOGIN must be set in /etc/fleet/reviewer.env")
+            _say("FLEETWRIGHT_REVIEWER_LOGIN must be set in /etc/fleetwright/reviewer.env")
             return BAD_CONFIG
         login = whoami()
         if (login or "").lower() != expected.lower():
@@ -192,12 +192,14 @@ def run(env: Mapping[str, str], git: Git, launch: Launch, whoami: WhoAmI = _gh_l
             return BAD_CONFIG
 
     try:
-        assignment = read_assignment(Path(env.get("FLEET_SLOTS_DIR") or DEFAULT_SLOTS_DIR) / slot)
+        assignment = read_assignment(
+            Path(env.get("FLEETWRIGHT_SLOTS_DIR") or DEFAULT_SLOTS_DIR) / slot
+        )
     except ValueError as exc:
         _say(str(exc))
         return BAD_ASSIGNMENT
     if assignment is None:
-        print(f"fleet_agent: {slot} has no assignment; idle")
+        print(f"fleetwright_agent: {slot} has no assignment; idle")
         return 0
     kind, number = assignment
     if (kind == "review") != (role == "review"):
@@ -221,7 +223,7 @@ def run(env: Mapping[str, str], git: Git, launch: Launch, whoami: WhoAmI = _gh_l
             "-p",
             text,
             "--dangerously-skip-permissions",
-            # One JSON event per line, which fleet_stream turns into a line per step in the journal.
+            # One JSON event per line, which fleetwright_stream turns into a line per step in the journal.
             "--output-format",
             "stream-json",
             "--verbose",
@@ -230,17 +232,17 @@ def run(env: Mapping[str, str], git: Git, launch: Launch, whoami: WhoAmI = _gh_l
 
 
 def launch_streaming(clone: str, env: Mapping[str, str]) -> Launch:
-    """Run the agent in its clone, under fleet_stream, and return its exit code."""
+    """Run the agent in its clone, under fleetwright_stream, and return its exit code."""
 
     def launch(argv: Sequence[str]) -> int:
         os.chdir(clone)
-        return fleet_stream.run(argv, env)
+        return fleetwright_stream.run(argv, env)
 
     return launch
 
 
 def main() -> int:
-    clone = os.environ.get("FLEET_CLONE", "")
+    clone = os.environ.get("FLEETWRIGHT_CLONE", "")
 
     def git(args: Sequence[str]) -> tuple[int, str]:
         done = subprocess.run(

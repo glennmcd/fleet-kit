@@ -1,7 +1,7 @@
 # CI gates
 
 Each gate prints `path:line: [rule] message` per finding and exits 1 if there are any. All are standard-library
-Python 3.12; run one locally with `PYTHONPATH=<fleet-kit>/scripts python -m gates.<name> --root . [--base <sha>]`.
+Python 3.12; run one locally with `PYTHONPATH=<fleetwright>/scripts python -m gates.<name> --root . [--base <sha>]`.
 
 Every gate exists because of a failure that slipped past review (Marquardt, *Guardrails for coding agents*),
 and the repository's own settings must cite theirs: an audit rule or obligation without an `incident` is
@@ -14,18 +14,18 @@ jobs:
   gates:
     permissions:
       contents: read
-    uses: glennmcd/fleet-kit/.github/workflows/gates.yml@<commit sha> # v0.2.0
+    uses: glennmcd/fleetwright/.github/workflows/gates.yml@<commit sha> # v0.2.0
     with:
       kit-ref: <the same commit sha>        # must be a full SHA; the workflow refuses anything else
 ```
 
-fleet-kit is public, so no token is needed. A private fork can pass a read-only token for it as the
+fleetwright is public, so no token is needed. A private fork can pass a read-only token for it as the
 `kit-token` secret, and must allow access under its Settings > Actions > General > Access.
 
 On a pull request every gate runs; on a push only the whole-tree gates (`silent_skips`, `file_size`,
 `duplication`) run, since the diff gates already judged the change. Mark the `gates` job as a required check.
 
-## Settings: `.fleet-gates.json`
+## Settings: `.fleetwright-gates.json`
 
 ```json
 {
@@ -44,7 +44,7 @@ On a pull request every gate runs; on a push only the whole-tree gates (`silent_
   },
   "obligations": [{"id": "src-needs-tests", "when": ["src/**/*.py"], "also": ["tests/**"],
                    "except": ["**/__init__.py"], "incident": "#4: a route shipped untested"}],
-  "duplication": {"min_lines": 8, "min_chars": 160, "baseline": ".fleet-gates/duplication-baseline.json"}
+  "duplication": {"min_lines": 8, "min_chars": 160, "baseline": ".fleetwright-gates/duplication-baseline.json"}
 }
 ```
 

@@ -4,16 +4,16 @@
 # ///
 """The watchdog: one pass, with no AI, that looks for what the fleet cannot see about itself.
 
-    fleet_watchdog.py                    one pass (the fleet-watchdog timer runs it every 5 minutes)
+    fleetwright_watchdog.py                    one pass (the fleetwright-watchdog timer runs it every 5 minutes)
 
 It runs four checks and prints one line for each thing it finds:
 
 - failed-unit: a slot's unit or the allocator's service has failed, or the allocator's timer is not running.
   A failed slot holds its work until a person looks (``systemctl reset-failed``).
 - stalled: a running slot whose unit has written no journal line for ``stall_minutes``. An agent writes a
-  line per step (``fleet_stream.py``), so silence means a hung call, not a long think.
+  line per step (``fleetwright_stream.py``), so silence means a hung call, not a long think.
 - red-main: a check on the default branch's head commit failed. This one acts: it sets the stop flag
-  (``fleet_stop.py``), since every agent would branch from a broken main. A person clears it. A line that
+  (``fleetwright_stop.py``), since every agent would branch from a broken main. A person clears it. A line that
   is already stopped keeps its note.
 - stuck-pr: an open pull request from an ``issue/<n>`` branch that has not changed for
   ``stuck_pr_minutes`` and that no running slot holds. The line says what it waits for: a fix round, a
@@ -21,11 +21,11 @@ It runs four checks and prints one line for each thing it finds:
 
 Each line starts with ``caught`` (a problem) or ``missed`` (a check could not be made, so a problem may
 have gone unseen). The last line is the run's result: ``watchdog: clean``, or the counts. Read them with
-``journalctl -u fleet-watchdog -o cat``. Exit 0 when every check was made, 1 when one was missed, 2 for a
+``journalctl -u fleetwright-watchdog -o cat``. Exit 0 when every check was made, 1 when one was missed, 2 for a
 bad config.
 
 Apart from the stop flag it changes nothing: it starts and stops no unit and writes nothing to GitHub.
-It reads the allocator's config, ``/etc/fleet/fleet.json``, with one optional object::
+It reads the allocator's config, ``/etc/fleetwright/fleetwright.json``, with one optional object::
 
     "watchdog": {"stall_minutes": 15, "stuck_pr_minutes": 120}
 """
@@ -44,13 +44,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import fleet_allocate
-import fleet_stop
-from fleet_allocate import Assignment, Config, Gh, PassError, Systemctl
+import fleetwright_allocate
+import fleetwright_stop
+from fleetwright_allocate import Assignment, Config, Gh, PassError, Systemctl
 
 RED = {"failure", "timed_out", "startup_failure"}
-ALLOCATOR_SERVICE = "fleet-allocate.service"
-ALLOCATOR_TIMER = "fleet-allocate.timer"
+ALLOCATOR_SERVICE = "fleetwright-allocate.service"
+ALLOCATOR_TIMER = "fleetwright-allocate.timer"
 
 Journal = Callable[[str], float | None]
 Clock = Callable[[], float]
@@ -109,7 +109,7 @@ def check_units(
     found: list[Finding] = []
     running: dict[str, Assignment | None] = {}
     for name in (*cfg.author_slots, *cfg.review_slots):
-        unit = fleet_allocate.unit_for(name)
+        unit = fleetwright_allocate.unit_for(name)
         answer = systemctl(["is-active", unit])[1].strip()
         if answer == "failed":
             found.append(
@@ -120,8 +120,8 @@ def check_units(
                     f"then `systemctl reset-failed {unit}`",
                 )
             )
-        elif answer in fleet_allocate.BUSY:
-            running[unit] = fleet_allocate.read_assignment(slots_dir / name)
+        elif answer in fleetwright_allocate.BUSY:
+            running[unit] = fleetwright_allocate.read_assignment(slots_dir / name)
         elif answer != "inactive":
             found.append(
                 (
@@ -135,7 +135,7 @@ def check_units(
             (
                 "caught",
                 "failed-unit",
-                f"{ALLOCATOR_SERVICE} failed: `journalctl -u fleet-allocate -o cat -n 50`",
+                f"{ALLOCATOR_SERVICE} failed: `journalctl -u fleetwright-allocate -o cat -n 50`",
             )
         )
     timer = systemctl(["is-active", ALLOCATOR_TIMER])[1].strip()
@@ -189,13 +189,13 @@ def check_main(repo: str, gh: Gh, stop_file: Path) -> list[Finding]:
         return []
     sha = next((str(r.get("head_sha") or "") for r in runs), "")[:7]
     what = f"main is red at {sha} ({', '.join(red)})"
-    if fleet_stop.status(stop_file) is not None:
+    if fleetwright_stop.status(stop_file) is not None:
         return [("caught", "red-main", f"{what}; the line was already stopped")]
-    fleet_stop.stop(f"watchdog: {what}", stop_file)
+    fleetwright_stop.stop(f"watchdog: {what}", stop_file)
     return [("caught", "red-main", f"{what}; the line is now stopped")]
 
 
-def _waits_for(p: fleet_allocate.Pull) -> str:
+def _waits_for(p: fleetwright_allocate.Pull) -> str:
     if p.conflicting or p.ci == "fail" or p.verdict == "request_changes":
         return "needs a fix round"
     if p.ci == "running":
@@ -208,8 +208,8 @@ def _waits_for(p: fleet_allocate.Pull) -> str:
 def check_pulls(
     cfg: Config, gh: Gh, running: dict[str, Assignment | None], now: float, limit: int
 ) -> list[Finding]:
-    reviewers = fleet_allocate.fetch_reviewers(cfg.repo, gh)
-    pulls = fleet_allocate.fetch_pulls(cfg, reviewers, gh)
+    reviewers = fleetwright_allocate.fetch_reviewers(cfg.repo, gh)
+    pulls = fleetwright_allocate.fetch_pulls(cfg, reviewers, gh)
     held = [a for a in running.values() if a]
     held_issues = {a.number for a in held if a.kind in ("issue", "fix")}
     held_pulls = {a.number for a in held if a.kind == "review"}
@@ -234,7 +234,7 @@ def check_pulls(
 def run_pass(
     cfg: Config,
     settings: Settings,
-    fleet_dir: Path,
+    fleetwright_dir: Path,
     gh: Gh,
     systemctl: Systemctl,
     journal: Journal,
@@ -259,7 +259,7 @@ def run_pass(
         AttributeError,
     )
     try:
-        units, running_now = check_units(cfg, fleet_dir / "slots", systemctl)
+        units, running_now = check_units(cfg, fleetwright_dir / "slots", systemctl)
         found += units
         running.update(running_now)
     except errors as exc:
@@ -280,26 +280,29 @@ def run_pass(
 
 def main(
     argv: list[str] | None = None,
-    gh: Gh = fleet_allocate._gh,
-    systemctl: Systemctl = fleet_allocate._systemctl,
+    gh: Gh = fleetwright_allocate._gh,
+    systemctl: Systemctl = fleetwright_allocate._systemctl,
     journal: Journal = _journal,
     now: Clock = time.time,
 ) -> int:
-    parser = argparse.ArgumentParser(prog="fleet_watchdog")
+    parser = argparse.ArgumentParser(prog="fleetwright_watchdog")
     parser.add_argument(
-        "--config", default=os.environ.get("FLEET_CONFIG") or fleet_allocate.DEFAULT_CONFIG
+        "--config",
+        default=os.environ.get("FLEETWRIGHT_CONFIG") or fleetwright_allocate.DEFAULT_CONFIG,
     )
-    parser.add_argument("--fleet-dir", default=fleet_allocate.FLEET_DIR)
+    parser.add_argument("--fleetwright-dir", default=fleetwright_allocate.FLEETWRIGHT_DIR)
     args = parser.parse_args(argv)
     try:
         raw = json.loads(Path(args.config).read_text(encoding="utf-8"))
         settings = parse_settings(raw)
-        cfg = fleet_allocate.parse_config(raw)
+        cfg = fleetwright_allocate.parse_config(raw)
     except (OSError, ValueError) as exc:
-        print(f"fleet_watchdog: {args.config}: {exc}", file=sys.stderr)
+        print(f"fleetwright_watchdog: {args.config}: {exc}", file=sys.stderr)
         return 2
-    stop_file = Path(os.environ.get("FLEET_STOP_FILE") or fleet_stop.DEFAULT_STOP_FILE)
-    return run_pass(cfg, settings, Path(args.fleet_dir), gh, systemctl, journal, now(), stop_file)
+    stop_file = Path(os.environ.get("FLEETWRIGHT_STOP_FILE") or fleetwright_stop.DEFAULT_STOP_FILE)
+    return run_pass(
+        cfg, settings, Path(args.fleetwright_dir), gh, systemctl, journal, now(), stop_file
+    )
 
 
 if __name__ == "__main__":

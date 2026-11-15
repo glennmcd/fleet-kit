@@ -1,7 +1,7 @@
 [project]
-name = "fleet-kit"
+name = "fleetwright"
 version = "0.4.0"
-description = "Development tooling for the fleet-kit Claude Code plugin (hooks, token report, tests)"
+description = "Development tooling for the fleetwright Claude Code plugin (hooks, token report, tests)"
 requires-python = ">=3.12"
 dependencies = []
 
@@ -31,27 +31,27 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 strict = true
 files = [
-  "scripts/fleet_report.py",
+  "scripts/fleetwright_report.py",
   "scripts/first_context.py",
-  "tests/test_fleet_report.py",
+  "tests/test_fleetwright_report.py",
   "tests/test_first_context.py",
   "tests/test_plugin.py",
   "scripts/gates",
-  "scripts/fleet_stop.py",
-  "tests/test_fleet_stop.py",
-  "scripts/fleet_slot.py",
-  "scripts/fleet_agent.py",
-  "tests/test_fleet_slot.py",
-  "tests/test_fleet_agent.py",
-  "scripts/fleet_allocate.py",
-  "tests/test_fleet_allocate.py",
-  "tests/test_fleet_allocate_io.py",
-  "scripts/fleet_check.py",
-  "scripts/fleet_watchdog.py",
-  "tests/test_fleet_watchdog.py",
-  "scripts/fleet_stream.py",
-  "tests/test_fleet_stream.py",
-  "tests/test_fleet_check.py",
+  "scripts/fleetwright_stop.py",
+  "tests/test_fleetwright_stop.py",
+  "scripts/fleetwright_slot.py",
+  "scripts/fleetwright_agent.py",
+  "tests/test_fleetwright_slot.py",
+  "tests/test_fleetwright_agent.py",
+  "scripts/fleetwright_allocate.py",
+  "tests/test_fleetwright_allocate.py",
+  "tests/test_fleetwright_allocate_io.py",
+  "scripts/fleetwright_check.py",
+  "scripts/fleetwright_watchdog.py",
+  "tests/test_fleetwright_watchdog.py",
+  "scripts/fleetwright_stream.py",
+  "tests/test_fleetwright_stream.py",
+  "tests/test_fleetwright_check.py",
   "tests/test_evasion_write_guard.py",
   "tests/test_evasion_kit.py",
   "tests/test_evasion_silent_skips.py",
@@ -72,10 +72,10 @@ mypy_path = "scripts:hooks"
 # The new hooks' and the stop script's module docstrings are their documentation.
 "hooks/write_guard.py" = ["E501"]
 "hooks/stop_line.py" = ["E501"]
-"scripts/fleet_stop.py" = ["E501"]
-"scripts/fleet_slot.py" = ["E501"]
-"scripts/fleet_agent.py" = ["E501"]
-"scripts/fleet_allocate.py" = ["E501"]
-"scripts/fleet_check.py" = ["E501"]
-"scripts/fleet_watchdog.py" = ["E501"]
-"scripts/fleet_stream.py" = ["E501"]
+"scripts/fleetwright_stop.py" = ["E501"]
+"scripts/fleetwright_slot.py" = ["E501"]
+"scripts/fleetwright_agent.py" = ["E501"]
+"scripts/fleetwright_allocate.py" = ["E501"]
+"scripts/fleetwright_check.py" = ["E501"]
+"scripts/fleetwright_watchdog.py" = ["E501"]
+"scripts/fleetwright_stream.py" = ["E501"]

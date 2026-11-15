@@ -10,7 +10,7 @@ name: verdict
 #       checks: write
 #       pull-requests: read
 #       issues: read
-#     uses: glennmcd/fleet-kit/.github/workflows/verdict.yml@<commit sha> # <tag>
+#     uses: glennmcd/fleetwright/.github/workflows/verdict.yml@<commit sha> # <tag>
 #     with:
 #       kit-ref: <the same commit sha>
 #
@@ -19,19 +19,19 @@ name: verdict
 #
 # Security: this runs with a write token and, for comments, in the default branch's context. It therefore
 # never checks out or runs the pull request's code, reads the comments only through the API, and takes the
-# default branch's `.fleet-gates.json`, so a pull request cannot change who may review it.
+# default branch's `.fleetwright-gates.json`, so a pull request cannot change who may review it.
 
 on:
   workflow_call:
     inputs:
       kit-ref:
-        description: Commit SHA of fleet-kit to take the gate scripts from (use the SHA this workflow is called at).
+        description: Commit SHA of fleetwright to take the gate scripts from (use the SHA this workflow is called at).
         required: true
         type: string
       config-path:
         description: Gate settings file in the calling repository's default branch.
         required: false
-        default: .fleet-gates.json
+        default: .fleetwright-gates.json
         type: string
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-       contains(github.event.comment.body, 'fleet-verdict'))
+       contains(github.event.comment.body, 'fleetwright-verdict'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -52,7 +52,7 @@ jobs:
       pull-requests: read
       issues: read
     env:
-      PYTHONPATH: .fleet-kit/scripts
+      PYTHONPATH: .fleetwright/scripts
       KIT_REF: ${{ inputs.kit-ref }}
       CONFIG: ${{ inputs.config-path }}
       REPO: ${{ github.repository }}
@@ -70,9 +70,9 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: glennmcd/fleet-kit
+          repository: glennmcd/fleetwright
           ref: ${{ inputs.kit-ref }}
-          path: .fleet-kit
+          path: .fleetwright
           persist-credentials: false
       - name: Publish the verdict check
         run: python3 -m gates.verdict --repo "$REPO" --pr "$PR" --config "$CONFIG"

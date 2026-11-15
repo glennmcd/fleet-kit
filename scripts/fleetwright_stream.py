@@ -4,7 +4,7 @@
 # ///
 """Run a headless agent and put one short line per step in the journal.
 
-``fleet_agent.py`` starts ``claude -p ... --output-format stream-json --verbose`` through ``run()``, which reads
+``fleetwright_agent.py`` starts ``claude -p ... --output-format stream-json --verbose`` through ``run()``, which reads
 the agent's events as they come and prints a summary of each to stdout, which systemd sends to the journal:
 
     start model=claude-opus-5-5 claude=2.1.311 session=...
@@ -217,7 +217,7 @@ def run(argv: Sequence[str], env: Mapping[str, str]) -> int:
             bufsize=1,
         )
     except OSError as exc:
-        print(f"fleet_stream: could not start {argv[0]}: {exc.strerror}", file=sys.stderr)
+        print(f"fleetwright_stream: could not start {argv[0]}: {exc.strerror}", file=sys.stderr)
         return 127
     stopping: list[int] = []
 

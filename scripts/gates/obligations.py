@@ -3,7 +3,7 @@
 Incident (Marquardt): a rule an agent has to remember is followed most of the time; an obligation a script
 checks is followed every time. Each rule cites the incident that made it necessary.
 
-Config (`.fleet-gates.json`):
+Config (`.fleetwright-gates.json`):
 
     "obligations": [
       {"id": "src-needs-tests", "when": ["backend/src/**/*.py"], "also": ["backend/tests/**"],
@@ -42,7 +42,7 @@ def evaluate(rules: list[dict[str, Any]], paths: set[str]) -> list[Finding]:
         rid = r.get("id", "?")
         if not r.get("incident"):
             found.append(
-                Finding(".fleet-gates.json", 1, RULE, f"obligation `{rid}` cites no incident")
+                Finding(".fleetwright-gates.json", 1, RULE, f"obligation `{rid}` cites no incident")
             )
             continue
         triggers = sorted(
@@ -68,7 +68,7 @@ def check(root: Path, config: dict[str, Any], args: argparse.Namespace) -> list[
     if not args.base:
         return [
             Finding(
-                ".fleet-gates.json",
+                ".fleetwright-gates.json",
                 1,
                 RULE,
                 "obligations need --base <commit> to know what changed",

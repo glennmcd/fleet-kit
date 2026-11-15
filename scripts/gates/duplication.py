@@ -12,10 +12,10 @@ Known limits, on purpose, because the check is a line hash and not a parser: a c
 or reordered lines is not found, and neither is one with a real code line inserted into it. Review catches
 those.
 
-Config (`.fleet-gates.json`):
+Config (`.fleetwright-gates.json`):
 
     "duplication": {"min_lines": 8, "min_chars": 160, "include": [...], "exclude": [...],
-                    "baseline": ".fleet-gates/duplication-baseline.json"}
+                    "baseline": ".fleetwright-gates/duplication-baseline.json"}
 
 Existing duplicates go into the baseline once (`--write-baseline`) so only new copies fail. The baseline
 may only shrink; the ratchet gate refuses a change that grows it.
@@ -44,7 +44,7 @@ DEFAULT_EXCLUDE = [
     "**/*.d.ts",
     "**/migrations/**",
 ]
-DEFAULT_BASELINE = ".fleet-gates/duplication-baseline.json"
+DEFAULT_BASELINE = ".fleetwright-gates/duplication-baseline.json"
 COMMENT = re.compile(r"^(#|//|/\*|\*|\*/)")
 IMPORT = re.compile(r"^(import\b|from\s+\S+\s+import\b|export\s+\*|export\s*\{.*\}\s*from\b)")
 TRIVIAL = re.compile(

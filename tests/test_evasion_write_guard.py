@@ -53,8 +53,8 @@ class World:
 @pytest.fixture
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     w = World(tmp_path.resolve())
-    monkeypatch.setenv("FLEET_CLONE", str(w.clone))
-    monkeypatch.delenv("FLEET_ALLOW_WRITE", raising=False)
+    monkeypatch.setenv("FLEETWRIGHT_CLONE", str(w.clone))
+    monkeypatch.delenv("FLEETWRIGHT_ALLOW_WRITE", raising=False)
     monkeypatch.setattr(tempfile, "tempdir", str(w.tmp))
     yield w
 
@@ -127,7 +127,7 @@ def test_other_tools_are_not_judged(world: World) -> None:
 def test_the_hook_does_nothing_on_a_machine_that_is_not_a_fleet_agent(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("FLEET_CLONE")
+    monkeypatch.delenv("FLEETWRIGHT_CLONE")
     assert world.tool("Write", str(world.other / "x")) is None
     assert world.bash(f"rm -rf {world.out}") is None
 
@@ -137,7 +137,7 @@ def test_extra_write_directories_and_the_temp_directory_are_allowed(
 ) -> None:
     assert world.tool("Write", str(world.tmp / "x")) is None
     assert denied(world.tool("Write", str(world.shared / "x")))
-    monkeypatch.setenv("FLEET_ALLOW_WRITE", str(world.shared))
+    monkeypatch.setenv("FLEETWRIGHT_ALLOW_WRITE", str(world.shared))
     assert world.tool("Write", str(world.shared / "x")) is None
 
 
@@ -339,14 +339,14 @@ def test_run_as_a_process_it_prints_a_deny_decision(world: World) -> None:
             "tool_input": {"file_path": str(world.other / "x")},
             "cwd": str(world.clone),
         },
-        {"FLEET_CLONE": str(world.clone), **world.temp_env},
+        {"FLEETWRIGHT_CLONE": str(world.clone), **world.temp_env},
     )
     assert done.returncode == 0
     assert json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_run_as_a_process_it_fails_closed_on_garbage_input(world: World) -> None:
-    done = run_hook("{not json", {"FLEET_CLONE": str(world.clone), **world.temp_env})
+    done = run_hook("{not json", {"FLEETWRIGHT_CLONE": str(world.clone), **world.temp_env})
     assert done.returncode == 0
     assert json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
@@ -354,6 +354,6 @@ def test_run_as_a_process_it_fails_closed_on_garbage_input(world: World) -> None
 def test_run_as_a_process_it_says_nothing_for_an_allowed_call(world: World) -> None:
     done = run_hook(
         {"tool_name": "Write", "tool_input": {"file_path": "a.py"}, "cwd": str(world.clone)},
-        {"FLEET_CLONE": str(world.clone), **world.temp_env},
+        {"FLEETWRIGHT_CLONE": str(world.clone), **world.temp_env},
     )
     assert done.returncode == 0 and done.stdout == ""

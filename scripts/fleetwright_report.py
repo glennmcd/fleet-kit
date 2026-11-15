@@ -16,10 +16,10 @@ into the measurements Alexander Marquardt's token article is built on:
 * context distribution: median, p90 and the share of requests over a ceiling;
 * first-turn cost: cache read vs fresh write on each transcript's first call.
 
-    python3 scripts/fleet_report.py --since 2026-11-01
+    python3 scripts/fleetwright_report.py --since 2026-11-01
     gh pr list --state merged --limit 2000 \\
         --json number,headRefName,mergedAt,additions,deletions > prs.json
-    python3 scripts/fleet_report.py --prs prs.json --baseline 2026-W45
+    python3 scripts/fleetwright_report.py --prs prs.json --baseline 2026-W45
 
 Prices are relative to fresh input (cache read 0.1, 5-minute cache write 1.25,
 1-hour cache write 2, output 5); override them with ``--price kind=value``.
@@ -442,8 +442,9 @@ def main(argv: list[str] | None = None) -> int:
         requests = [r for r in requests if r.when.date() >= since]
     if args.prs and not os.path.isfile(args.prs):
         print(
-            f"fleet_report: no PR data at {args.prs}; write it with: gh pr list --state merged "
-            "--limit 2000 --json number,headRefName,mergedAt,additions,deletions",
+            f"fleetwright_report: no PR data at {args.prs}; write it with: "
+            "gh pr list --state merged --limit 2000 "
+            "--json number,headRefName,mergedAt,additions,deletions",
             file=sys.stderr,
         )
         return 2

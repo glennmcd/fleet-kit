@@ -34,7 +34,8 @@ CHARS_PER_TOKEN = 4  # rough English average; good enough to rank the parts
 SLASH_COMMAND_ECHOES = ("<local-command", "<command-")
 NOT_RECORDED = (
     "Not in the transcript: tool definitions. Compare the total with the first reply's input,\n"
-    "cache-read and cache-write tokens (fleet_report.py's 1st-turn columns) to see their size."
+    "cache-read and cache-write tokens (fleetwright_report.py's 1st-turn columns) to see their "
+    "size."
 )
 
 

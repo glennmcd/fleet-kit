@@ -4,17 +4,17 @@
 # ///
 """Check a slot as its agent would run: same user, secrets and sandbox. Read-only; prints no secret.
 
-Run by ``fleet-check-agent@<slot>`` or ``fleet-check-review@<slot>``, never by hand, so a member of
-fleet-admin can check a slot without reading its tokens:
+Run by ``fleetwright-check-agent@<slot>`` or ``fleetwright-check-review@<slot>``, never by hand, so a member of
+fleetwright-admin can check a slot without reading its tokens:
 
-    systemctl start fleet-check-review@review01
-    journalctl -u fleet-check-review@review01 -o cat -n 30
+    systemctl start fleetwright-check-review@review01
+    journalctl -u fleetwright-check-review@review01 -o cat -n 30
 
 It reports, one line each: the slot's name and role agree; the unattended switch is on; the tools are on
 the PATH; ``gh`` has ``api --slurp`` (2.48 or later, which the allocator needs; Ubuntu's own package is
-older); a model key is set (its name, never its value); ``gh`` is signed in, as ``FLEET_REVIEWER_LOGIN``
+older); a model key is set (its name, never its value); ``gh`` is signed in, as ``FLEETWRIGHT_REVIEWER_LOGIN``
 on a review slot; the clone is there and clean; both plugins are installed; the home is closed to other
-users; the sandbox keeps the slot out of ``/var/lib/fleet`` and ``/etc/fleet``; the line is not stopped.
+users; the sandbox keeps the slot out of ``/var/lib/fleetwright`` and ``/etc/fleetwright``; the line is not stopped.
 Exit 0 when every check passes, 1 otherwise.
 """
 
@@ -30,11 +30,11 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-FLEET_DIR = "/var/lib/fleet"
-ENV_DIR = "/etc/fleet"
-STOP_FILE = f"{FLEET_DIR}/STOP"
+FLEETWRIGHT_DIR = "/var/lib/fleetwright"
+ENV_DIR = "/etc/fleetwright"
+STOP_FILE = f"{FLEETWRIGHT_DIR}/STOP"
 TOOLS = ("uv", "claude", "gh", "git", "rtk")
-PLUGINS = ("fleet-kit", "cc-practices")
+PLUGINS = ("fleetwright", "cc-practices")
 MODEL_KEYS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 ROLES = {"author": re.compile(r"agent[0-9]{2}"), "review": re.compile(r"review[0-9]{2}")}
 GH_VERSION_RE = re.compile(r"gh version ([0-9]+\.[0-9]+\.[0-9]+)")
@@ -55,10 +55,14 @@ class Machine:
 
 
 def _slot(m: Machine) -> Result:
-    slot, role = m.env.get("FLEET_SLOT", ""), m.env.get("FLEET_ROLE", "")
+    slot, role = m.env.get("FLEETWRIGHT_SLOT", ""), m.env.get("FLEETWRIGHT_ROLE", "")
     pattern = ROLES.get(role)
     if pattern is None or not pattern.fullmatch(slot):
-        return "slot", False, f"FLEET_SLOT {slot!r} and FLEET_ROLE {role!r} do not agree"
+        return (
+            "slot",
+            False,
+            f"FLEETWRIGHT_SLOT {slot!r} and FLEETWRIGHT_ROLE {role!r} do not agree",
+        )
     return "slot", True, f"{slot}, {role}"
 
 
@@ -105,13 +109,13 @@ def _model_key(m: Machine) -> Result:
 
 
 def _github(m: Machine) -> Result:
-    review = m.env.get("FLEET_ROLE") == "review"
-    expected = m.env.get("FLEET_REVIEWER_LOGIN", "")
+    review = m.env.get("FLEETWRIGHT_ROLE") == "review"
+    expected = m.env.get("FLEETWRIGHT_REVIEWER_LOGIN", "")
     if not m.env.get("GH_TOKEN"):
         source = "reviewer.env" if review else "agent.env"
         return "github", False, f"GH_TOKEN is not set ({source})"
     if review and not expected:
-        return "github", False, "FLEET_REVIEWER_LOGIN is not set (reviewer.env)"
+        return "github", False, "FLEETWRIGHT_REVIEWER_LOGIN is not set (reviewer.env)"
     code, out = m.run(["gh", "api", "user", "--jq", ".login"])
     login = out.strip()
     if code != 0 or not login:
@@ -122,9 +126,9 @@ def _github(m: Machine) -> Result:
 
 
 def _clone(m: Machine) -> Result:
-    clone = m.env.get("FLEET_CLONE", "")
+    clone = m.env.get("FLEETWRIGHT_CLONE", "")
     if not clone or not m.exists(f"{clone}/.git"):
-        return "clone", False, f"no clone at {clone or '(FLEET_CLONE unset)'}"
+        return "clone", False, f"no clone at {clone or '(FLEETWRIGHT_CLONE unset)'}"
     code, url = m.run(["git", "-C", clone, "remote", "get-url", "origin"])
     if code != 0:
         return "clone", False, f"{clone} has no origin"
@@ -147,27 +151,35 @@ def _plugins(m: Machine) -> Result:
 
 
 def _home(m: Machine) -> Result:
-    home = os.path.dirname(m.env.get("FLEET_CLONE", "").rstrip("/"))
+    home = os.path.dirname(m.env.get("FLEETWRIGHT_CLONE", "").rstrip("/"))
     mode = m.mode(home) if home else None
     if mode is None:
         return "home", False, f"cannot read the mode of {home or '(no home)'}"
-    # Group bits show the fleet-admin ACL's mask; only "other" must be closed.
+    # Group bits show the fleetwright-admin ACL's mask; only "other" must be closed.
     if mode & 0o007:
         return "home", False, f"{home} is mode {mode:o}: other users can enter it"
     return "home", True, f"{home} is closed to other users"
 
 
 def _sandbox(m: Machine) -> Result:
-    if m.writable(FLEET_DIR):
-        return "sandbox", False, f"the slot can write {FLEET_DIR}: it could clear the stop flag"
+    if m.writable(FLEETWRIGHT_DIR):
+        return (
+            "sandbox",
+            False,
+            f"the slot can write {FLEETWRIGHT_DIR}: it could clear the stop flag",
+        )
     if m.listable(ENV_DIR):
         return "sandbox", False, f"the slot can read {ENV_DIR}: it could read every token"
-    return "sandbox", True, f"cannot write {FLEET_DIR} or read {ENV_DIR}"
+    return "sandbox", True, f"cannot write {FLEETWRIGHT_DIR} or read {ENV_DIR}"
 
 
 def _stop(m: Machine) -> Result:
     if m.exists(STOP_FILE):
-        return "stop flag", False, "the line is stopped: no agent starts (fleet_stop.py clear)"
+        return (
+            "stop flag",
+            False,
+            "the line is stopped: no agent starts (fleetwright_stop.py clear)",
+        )
     return "stop flag", True, "the line is running"
 
 
@@ -195,7 +207,7 @@ def report(m: Machine) -> int:
     for name, ok, detail in results:
         print(f"{'ok  ' if ok else 'FAIL'}  {name}: {detail}")
     failed = sum(1 for _, ok, _ in results if not ok)
-    slot = m.env.get("FLEET_SLOT", "slot")
+    slot = m.env.get("FLEETWRIGHT_SLOT", "slot")
     print(f"{slot}: every check passed" if not failed else f"{slot}: {failed} check(s) failed")
     return 0 if not failed else 1
 
@@ -223,7 +235,7 @@ def _mode(path: str) -> int | None:
 
 def _writable(path: str) -> bool:
     try:
-        with tempfile.NamedTemporaryFile(dir=path, prefix=".fleet-check."):
+        with tempfile.NamedTemporaryFile(dir=path, prefix=".fleetwright-check."):
             return True
     except OSError:
         return False

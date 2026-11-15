@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import fleet_allocate
+import fleetwright_allocate
 import pytest
 
 REPO = "o/r"
@@ -24,7 +24,7 @@ DONE = "## Done when\n\n- [ ] it works\n"
 
 
 def marker(sha: str, verdict: str) -> str:
-    return f'<!-- fleet-verdict v1 {{"sha": "{sha}", "verdict": "{verdict}"}} -->\n\nfindings'
+    return f'<!-- fleetwright-verdict v1 {{"sha": "{sha}", "verdict": "{verdict}"}} -->\n\nfindings'
 
 
 class FakeGitHub:
@@ -53,7 +53,7 @@ class FakeGitHub:
         path = args[-1]
         if path.startswith(f"repos/{REPO}/pulls?state=closed"):
             return json.dumps(self.closed)
-        if path.endswith("/contents/.fleet-gates.json"):
+        if path.endswith("/contents/.fleetwright-gates.json"):
             body = json.dumps({"verdict": {"reviewers": self.reviewers}}).encode()
             return json.dumps({"content": base64.b64encode(body).decode()})
         if path.endswith("/comments"):
@@ -118,7 +118,7 @@ def comment(i: int, login: str, body: str) -> dict[str, Any]:
 @pytest.fixture
 def fleet(tmp_path: Path) -> Path:
     (tmp_path / "slots").mkdir()
-    (tmp_path / "fleet.json").write_text(
+    (tmp_path / "fleetwright.json").write_text(
         json.dumps(
             {
                 "repo": REPO,
@@ -133,8 +133,8 @@ def fleet(tmp_path: Path) -> Path:
 
 
 def run(fleet: Path, gh: FakeGitHub, systemd: FakeSystemd, *extra: str) -> int:
-    return fleet_allocate.main(
-        ["--config", str(fleet / "fleet.json"), "--fleet-dir", str(fleet), *extra],
+    return fleetwright_allocate.main(
+        ["--config", str(fleet / "fleetwright.json"), "--fleetwright-dir", str(fleet), *extra],
         gh=gh,
         systemctl=systemd,
         rng=random.Random(1),
@@ -144,7 +144,7 @@ def run(fleet: Path, gh: FakeGitHub, systemd: FakeSystemd, *extra: str) -> int:
 
 @pytest.fixture(autouse=True)
 def no_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FLEET_STOP_FILE", str(tmp_path / "STOP"))
+    monkeypatch.setenv("FLEETWRIGHT_STOP_FILE", str(tmp_path / "STOP"))
 
 
 def test_a_pass_writes_assignments_and_starts_the_units(fleet: Path) -> None:
@@ -153,7 +153,7 @@ def test_a_pass_writes_assignments_and_starts_the_units(fleet: Path) -> None:
     assert run(fleet, gh, systemd) == 0
     assert (fleet / "slots" / "review01").read_text(encoding="utf-8") == "review 40\n"
     assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 3\n"
-    assert systemd.started == ["fleet-review@review01", "fleet-agent@agent01"]
+    assert systemd.started == ["fleetwright-review@review01", "fleetwright-agent@agent01"]
     state = json.loads((fleet / "state.json").read_text(encoding="utf-8"))
     assert state == {"runs": {"3": 1}, "reviewed": {"40": [SHA]}}
 
@@ -220,7 +220,9 @@ def test_busy_and_failed_slots_keep_their_work(
 ) -> None:
     (fleet / "slots" / "agent01").write_text("issue 3\n", encoding="utf-8")
     (fleet / "slots" / "agent02").write_text("issue 4\n", encoding="utf-8")
-    systemd = FakeSystemd({"fleet-agent@agent01": "active", "fleet-agent@agent02": "failed"})
+    systemd = FakeSystemd(
+        {"fleetwright-agent@agent01": "active", "fleetwright-agent@agent02": "failed"}
+    )
     run(fleet, FakeGitHub(issues=[issue(3), issue(4), issue(5)]), systemd)
     assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 3\n"
     assert (fleet / "slots" / "agent02").read_text(encoding="utf-8") == "issue 4\n"
@@ -239,7 +241,7 @@ def test_a_stopped_fleet_reads_and_starts_nothing(fleet: Path, tmp_path: Path) -
 def test_a_bad_config_is_an_error_not_a_traceback(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (fleet / "fleet.json").write_text(
+    (fleet / "fleetwright.json").write_text(
         '{"repo": "o/r", "slots": ["root"], "lanes": {"x": 1}}', encoding="utf-8"
     )
     assert run(fleet, FakeGitHub(), FakeSystemd()) == 2
@@ -288,8 +290,8 @@ def test_a_merge_older_than_the_window_does_not_block_a_reopened_issue(fleet: Pa
     gh = FakeGitHub(issues=[issue(46)], closed=closed_pulls())
     systemd = FakeSystemd()
     hour = 60 * 60
-    fleet_allocate.main(
-        ["--config", str(fleet / "fleet.json"), "--fleet-dir", str(fleet)],
+    fleetwright_allocate.main(
+        ["--config", str(fleet / "fleetwright.json"), "--fleetwright-dir", str(fleet)],
         gh=gh,
         systemctl=systemd,
         rng=random.Random(1),
@@ -328,7 +330,7 @@ def test_a_closed_pr_page_full_of_recent_merges_stops_the_pass(fleet: Path) -> N
 @pytest.mark.parametrize("answer", ["", "unknown", "maintenance"])
 def test_a_slot_whose_state_cannot_be_read_stops_the_pass(fleet: Path, answer: str) -> None:
     (fleet / "slots" / "agent01").write_text("issue 3\n", encoding="utf-8")
-    systemd = FakeSystemd({"fleet-agent@agent01": answer})
+    systemd = FakeSystemd({"fleetwright-agent@agent01": answer})
     assert run(fleet, FakeGitHub(issues=[issue(3), issue(4)]), systemd) == 1
     assert systemd.started == []
     assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 3\n"
@@ -338,7 +340,7 @@ def test_a_slot_whose_state_cannot_be_read_stops_the_pass(fleet: Path, answer: s
 @pytest.mark.parametrize("state", ["activating", "deactivating", "reloading"])
 def test_a_slot_on_its_way_up_or_down_is_busy(fleet: Path, state: str) -> None:
     (fleet / "slots" / "agent01").write_text("issue 3\n", encoding="utf-8")
-    systemd = FakeSystemd({"fleet-agent@agent01": state})
+    systemd = FakeSystemd({"fleetwright-agent@agent01": state})
     run(fleet, FakeGitHub(issues=[issue(3)]), systemd)
     assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 3\n"
     assert systemd.started == []
@@ -346,7 +348,7 @@ def test_a_slot_on_its_way_up_or_down_is_busy(fleet: Path, state: str) -> None:
 
 def test_a_unit_that_fails_to_start_gives_its_work_back(fleet: Path) -> None:
     gh = FakeGitHub(issues=[issue(3)], pulls=[pr(40, 12)])
-    systemd = FakeSystemd(failing=("fleet-review@review01", "fleet-agent@agent01"))
+    systemd = FakeSystemd(failing=("fleetwright-review@review01", "fleetwright-agent@agent01"))
     assert run(fleet, gh, systemd) == 1
     assert not (fleet / "slots" / "review01").exists()
     assert not (fleet / "slots" / "agent01").exists()
@@ -354,7 +356,7 @@ def test_a_unit_that_fails_to_start_gives_its_work_back(fleet: Path) -> None:
     assert state == {"runs": {}, "reviewed": {}}
     retry = FakeSystemd()
     run(fleet, gh, retry)  # the head was not reviewed, so the next pass tries again
-    assert "fleet-review@review01" in retry.started
+    assert "fleetwright-review@review01" in retry.started
 
 
 def test_a_pr_from_a_fork_is_never_given_to_a_slot(fleet: Path) -> None:
@@ -364,7 +366,7 @@ def test_a_pr_from_a_fork_is_never_given_to_a_slot(fleet: Path) -> None:
     )
     systemd = FakeSystemd()
     run(fleet, gh, systemd)
-    assert systemd.started == ["fleet-agent@agent01"]
+    assert systemd.started == ["fleetwright-agent@agent01"]
     assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 12\n"
 
 
@@ -404,7 +406,7 @@ def test_a_github_failure_ends_the_pass_cleanly(
     systemd = FakeSystemd()
     assert run(fleet, BrokenGitHub(error), systemd) == 1
     assert systemd.started == []
-    assert "fleet_allocate:" in capsys.readouterr().err
+    assert "fleetwright_allocate:" in capsys.readouterr().err
 
 
 def test_a_gh_too_old_to_slurp_says_so_in_one_line(
@@ -414,7 +416,7 @@ def test_a_gh_too_old_to_slurp_says_so_in_one_line(
     error = subprocess.CalledProcessError(1, ["gh", "api", "--paginate"], stderr=usage)
     assert run(fleet, BrokenGitHub(error), FakeSystemd()) == 1
     err = capsys.readouterr().err
-    assert "unknown flag: --slurp" in err and "2.48" in err and "fleet_check" in err
+    assert "unknown flag: --slurp" in err and "2.48" in err and "fleetwright_check" in err
     assert "Usage:" not in err and len(err.strip().splitlines()) == 1
 
 

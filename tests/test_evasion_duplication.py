@@ -111,7 +111,7 @@ def test_the_baseline_allows_old_copies_but_not_a_third(tmp_path: Path) -> None:
     put(tmp_path, "a.py", BLOCK)
     put(tmp_path, "b.py", BLOCK)
     duplication.check(tmp_path, CFG, argparse.Namespace(write_baseline=True))
-    saved = json.loads((tmp_path / ".fleet-gates/duplication-baseline.json").read_text())
+    saved = json.loads((tmp_path / ".fleetwright-gates/duplication-baseline.json").read_text())
     assert saved and all(v == 2 for v in saved.values())
     assert run(tmp_path) == []
     put(tmp_path, "c.py", BLOCK)

@@ -8,8 +8,8 @@ Two agents that share a checkout overwrite each other's work, and an agent that 
 neighbour's clone changes the fleet, not its task. This hook refuses a write whose target is outside
 the agent's clone.
 
-It acts only on a fleet agent: ``FLEET_CLONE`` must be set (the agent's service unit does that). The
-agent may also write to the directories in ``FLEET_ALLOW_WRITE`` (a ``os.pathsep``-separated list) and to
+It acts only on a fleet agent: ``FLEETWRIGHT_CLONE`` must be set (the agent's service unit does that). The
+agent may also write to the directories in ``FLEETWRIGHT_ALLOW_WRITE`` (a ``os.pathsep``-separated list) and to
 the system temp directory. Anything else is refused, and so is any write whose target cannot be worked out
 (an unset variable, a brace expansion, a process substitution).
 
@@ -101,10 +101,10 @@ def real(path: str) -> str:
 
 def zones() -> list[str]:
     out = []
-    clone = os.environ.get("FLEET_CLONE")
+    clone = os.environ.get("FLEETWRIGHT_CLONE")
     if clone:
         out.append(real(clone))
-    for extra in os.environ.get("FLEET_ALLOW_WRITE", "").split(os.pathsep):
+    for extra in os.environ.get("FLEETWRIGHT_ALLOW_WRITE", "").split(os.pathsep):
         if extra.strip():
             out.append(real(extra.strip()))
     out.append(real(tempfile.gettempdir()))
@@ -457,14 +457,14 @@ def deny(reason: str) -> dict[str, Any]:
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": f"{reason}. Work only inside your own clone ({os.environ.get('FLEET_CLONE')}).",
+            "permissionDecisionReason": f"{reason}. Work only inside your own clone ({os.environ.get('FLEETWRIGHT_CLONE')}).",
         }
     }
 
 
 def decide(payload: dict[str, Any]) -> dict[str, Any] | None:
     """The hook's output for one tool call, or None to allow it."""
-    if not os.environ.get("FLEET_CLONE"):
+    if not os.environ.get("FLEETWRIGHT_CLONE"):
         return None
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input") or {}

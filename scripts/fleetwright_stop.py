@@ -4,15 +4,15 @@
 # ///
 """Stop the line: halt every agent on this machine with one command.
 
-    fleet_stop.py stop "why"     create the flag file; every agent's next tool call is refused
-    fleet_stop.py clear          remove it; agents can work again
-    fleet_stop.py status         say whether the line is stopped, and why
+    fleetwright_stop.py stop "why"     create the flag file; every agent's next tool call is refused
+    fleetwright_stop.py clear          remove it; agents can work again
+    fleetwright_stop.py status         say whether the line is stopped, and why
 
-The flag file is ``FLEET_STOP_FILE`` (default ``/var/lib/fleet/STOP``). The hook that reads it is
+The flag file is ``FLEETWRIGHT_STOP_FILE`` (default ``/var/lib/fleetwright/STOP``). The hook that reads it is
 ``hooks/stop_line.py``. It stops new tool calls; it does not kill a command already running, so pair
 it with stopping the agents' service units (docs/control-plane.md). The directory belongs to the
-fleet-admin group (``fleet_slot.py init``) and is not writable by the agents' users, or an agent could
-clear its own stop. Any member of fleet-admin can stop and clear the line, without root.
+fleetwright-admin group (``fleetwright_slot.py init``) and is not writable by the agents' users, or an agent could
+clear its own stop. Any member of fleetwright-admin can stop and clear the line, without root.
 """
 
 from __future__ import annotations
@@ -25,17 +25,17 @@ import tempfile
 import time
 from pathlib import Path
 
-DEFAULT_STOP_FILE = "/var/lib/fleet/STOP"
+DEFAULT_STOP_FILE = "/var/lib/fleetwright/STOP"
 
 
 def flag_path() -> Path:
-    return Path(os.environ.get("FLEET_STOP_FILE") or DEFAULT_STOP_FILE)
+    return Path(os.environ.get("FLEETWRIGHT_STOP_FILE") or DEFAULT_STOP_FILE)
 
 
 def stop(reason: str, path: Path | None = None) -> Path:
     """Write the flag as a new file renamed into place.
 
-    The directory belongs to fleet-admin, but a flag another admin wrote is that admin's file. Renaming
+    The directory belongs to fleetwright-admin, but a flag another admin wrote is that admin's file. Renaming
     needs only the directory, so any admin can replace it; mode 664 lets the group read and fix it.
     """
     path = path or flag_path()
@@ -76,7 +76,7 @@ def status(path: Path | None = None) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="fleet_stop")
+    parser = argparse.ArgumentParser(prog="fleetwright_stop")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("stop")
     p.add_argument("reason", nargs="*")

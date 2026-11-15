@@ -80,7 +80,7 @@ wheels = [
 ]
 
 [[package]]
-name = "fleet-kit"
+name = "fleetwright"
 version = "0.4.0"
 source = { virtual = "." }
 

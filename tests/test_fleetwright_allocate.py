@@ -6,7 +6,7 @@ import random
 from typing import Any
 
 import pytest
-from fleet_allocate import (
+from fleetwright_allocate import (
     Assignment,
     Config,
     Issue,

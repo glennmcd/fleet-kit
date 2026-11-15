@@ -17,7 +17,7 @@ VENDORED_SCRIPTS = {"session_tokens.py"}
 class Plugin(unittest.TestCase):
     def test_every_script_runs_without_the_projects_environment(self) -> None:
         # Without the inline header, `uv run --script` falls back to the project and tries to create
-        # /opt/fleet-kit/.venv, which only root can write.
+        # /opt/fleetwright/.venv, which only root can write.
         missing = [
             path.name
             for path in sorted((ROOT / "scripts").glob("*.py"))
@@ -29,8 +29,8 @@ class Plugin(unittest.TestCase):
     def test_manifests_parse_and_agree_on_name(self) -> None:
         plugin = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
         market = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
-        self.assertEqual(plugin["name"], "fleet-kit")
-        self.assertIn("fleet-kit", [p["name"] for p in market["plugins"]])
+        self.assertEqual(plugin["name"], "fleetwright")
+        self.assertIn("fleetwright", [p["name"] for p in market["plugins"]])
 
     def test_every_hook_command_names_an_existing_script(self) -> None:
         hooks = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))

@@ -1,4 +1,4 @@
-"""Tests for scripts/fleet_report.py, on fixed transcripts written to a temp folder."""
+"""Tests for scripts/fleetwright_report.py, on fixed transcripts written to a temp folder."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-import fleet_report as fr  # noqa: E402
+import fleetwright_report as fr  # noqa: E402
 
 
 def record(

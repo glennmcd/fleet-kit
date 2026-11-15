@@ -1,30 +1,30 @@
 name: gates
 
-# Reusable workflow: the fleet-kit CI gates. A repository calls it from its own CI:
+# Reusable workflow: the fleetwright CI gates. A repository calls it from its own CI:
 #
 #   gates:
-#     uses: glennmcd/fleet-kit/.github/workflows/gates.yml@<commit sha>
+#     uses: glennmcd/fleetwright/.github/workflows/gates.yml@<commit sha>
 #     with:
 #       kit-ref: <the same commit sha>
 #
-# The gate scripts are standard-library Python. Settings live in the caller's `.fleet-gates.json`; see
+# The gate scripts are standard-library Python. Settings live in the caller's `.fleetwright-gates.json`; see
 # docs/gates.md. Every step runs even when an earlier one fails, so one run reports every gate.
 
 on:
   workflow_call:
     inputs:
       kit-ref:
-        description: Commit SHA of fleet-kit to take the gate scripts from (use the SHA this workflow is called at).
+        description: Commit SHA of fleetwright to take the gate scripts from (use the SHA this workflow is called at).
         required: true
         type: string
       config-path:
         description: Gate settings file in the calling repository.
         required: false
-        default: .fleet-gates.json
+        default: .fleetwright-gates.json
         type: string
     secrets:
       kit-token:
-        description: Read-only token for fleet-kit, needed only when the kit is a private fork.
+        description: Read-only token for fleetwright, needed only when the kit is a private fork.
         required: false
 
 permissions:
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      PYTHONPATH: .fleet-kit/scripts
+      PYTHONPATH: .fleetwright/scripts
       KIT_REF: ${{ inputs.kit-ref }}
       CONFIG: ${{ inputs.config-path }}
       # A pull request's base commit; empty on a push, when the diff gates were already run on the PR.
@@ -51,9 +51,9 @@ jobs:
           [[ "$KIT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "kit-ref must be a full commit SHA, got: $KIT_REF"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: glennmcd/fleet-kit
+          repository: glennmcd/fleetwright
           ref: ${{ inputs.kit-ref }}
-          path: .fleet-kit
+          path: .fleetwright
           token: ${{ secrets.kit-token || github.token }}
           persist-credentials: false
       - name: Settings file exists

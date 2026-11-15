@@ -1,10 +1,10 @@
 {
-  "name": "fleet-kit",
+  "name": "fleetwright",
   "owner": { "name": "Glenn McDonald" },
-  "description": "Local marketplace for the fleet-kit plugin.",
+  "description": "Local marketplace for the fleetwright plugin.",
   "plugins": [
     {
-      "name": "fleet-kit",
+      "name": "fleetwright",
       "source": "./",
       "description": "Context-ceiling and wait-cap hooks for sub-agents, and a token report per merged PR."
     }

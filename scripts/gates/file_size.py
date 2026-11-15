@@ -3,7 +3,7 @@
 Incident (Marquardt): "Agents love to keep appending to one file." A long file costs every later agent
 context tokens and attention, so the cap is a cost control as much as a style rule.
 
-Config (`.fleet-gates.json`):
+Config (`.fleetwright-gates.json`):
 
     "file_size": {
       "cap": 800,

@@ -6,10 +6,10 @@ import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-import fleet_agent
-import fleet_stream
+import fleetwright_agent
+import fleetwright_stream
 import pytest
-from fleet_agent import BAD_ASSIGNMENT, BAD_CONFIG, NOT_READY, STOPPED, run
+from fleetwright_agent import BAD_ASSIGNMENT, BAD_CONFIG, NOT_READY, STOPPED, run
 
 
 class FakeGit:
@@ -44,7 +44,7 @@ class Launch:
         return 0
 
 
-def whoami(login: str | None) -> fleet_agent.WhoAmI:
+def whoami(login: str | None) -> fleetwright_agent.WhoAmI:
     return lambda: login
 
 
@@ -61,14 +61,14 @@ def make_env(
     if assignment is not None:
         (slots / slot).write_text(assignment + "\n", encoding="utf-8")
     env = {
-        "FLEET_SLOT": slot,
-        "FLEET_ROLE": role,
-        "FLEET_CLONE": str(tmp_path / "repo"),
-        "FLEET_STOP_FILE": str(tmp_path / "STOP"),
-        "FLEET_SLOTS_DIR": str(slots),
+        "FLEETWRIGHT_SLOT": slot,
+        "FLEETWRIGHT_ROLE": role,
+        "FLEETWRIGHT_CLONE": str(tmp_path / "repo"),
+        "FLEETWRIGHT_STOP_FILE": str(tmp_path / "STOP"),
+        "FLEETWRIGHT_SLOTS_DIR": str(slots),
     }
     if role == "review":
-        env["FLEET_REVIEWER_LOGIN"] = "g26work"
+        env["FLEETWRIGHT_REVIEWER_LOGIN"] = "g26work"
     return env
 
 
@@ -115,9 +115,9 @@ def test_the_runner_hands_the_agent_to_the_stream_and_returns_its_code(
         seen["argv"], seen["cwd"] = list(argv), os.getcwd()
         return 7
 
-    monkeypatch.setattr(fleet_stream, "run", fake_stream)
+    monkeypatch.setattr(fleetwright_stream, "run", fake_stream)
     monkeypatch.chdir(tmp_path.parent)
-    assert fleet_agent.launch_streaming(str(tmp_path), {})(["claude", "-p", "x"]) == 7
+    assert fleetwright_agent.launch_streaming(str(tmp_path), {})(["claude", "-p", "x"]) == 7
     assert seen == {"argv": ["claude", "-p", "x"], "cwd": str(tmp_path)}
 
 
@@ -159,8 +159,8 @@ def test_a_fix_round_works_on_the_issue_branch_with_its_own_prompt(
     assert run(env, git, launch) == 0
     assert git.ran("switch") == [["switch", "-c", "issue/12", "--track", "origin/issue/12"]]
     assert launch.argv is not None
-    assert launch.argv[2] == fleet_agent.fix_prompt(12)
-    assert launch.argv[2] != fleet_agent.issue_prompt(12)
+    assert launch.argv[2] == fleetwright_agent.fix_prompt(12)
+    assert launch.argv[2] != fleetwright_agent.issue_prompt(12)
 
 
 # --- review slots -------------------------------------------------------------------------------
@@ -172,7 +172,7 @@ def test_a_review_checks_out_the_prs_head_and_runs_the_review(review_env: dict[s
     assert git.ran("fetch") == [["fetch", "origin", "+refs/pull/40/head:refs/remotes/origin/pr/40"]]
     assert git.ran("switch") == [["switch", "--detach", "origin/pr/40"]]
     assert launch.argv is not None
-    assert launch.argv[2] == fleet_agent.review_prompt(40)
+    assert launch.argv[2] == fleetwright_agent.review_prompt(40)
     assert "review-pr" in launch.argv[2]
 
 
@@ -190,7 +190,7 @@ def test_the_login_check_ignores_case(review_env: dict[str, str]) -> None:
 
 
 def test_a_review_slot_needs_the_expected_login(review_env: dict[str, str]) -> None:
-    del review_env["FLEET_REVIEWER_LOGIN"]
+    del review_env["FLEETWRIGHT_REVIEWER_LOGIN"]
     launch = Launch()
     assert run(review_env, FakeGit(), launch, whoami("g26work")) == BAD_CONFIG
     assert launch.argv is None
@@ -221,7 +221,7 @@ def test_the_slot_name_and_role_must_agree(
     tmp_path: Path, slots: Path, slot: str, role: str
 ) -> None:
     env = make_env(tmp_path, slots, slot, role, "issue 12")
-    env["FLEET_REVIEWER_LOGIN"] = "g26work"
+    env["FLEETWRIGHT_REVIEWER_LOGIN"] = "g26work"
     assert run(env, FakeGit(), Launch(), whoami("g26work")) == BAD_CONFIG
 
 
@@ -231,7 +231,7 @@ def test_the_slot_name_and_role_must_agree(
 def test_a_stopped_line_starts_nothing(
     env: dict[str, str], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    Path(env["FLEET_STOP_FILE"]).write_text("main is red\n", encoding="utf-8")
+    Path(env["FLEETWRIGHT_STOP_FILE"]).write_text("main is red\n", encoding="utf-8")
     git, launch = FakeGit(), Launch()
     assert run(env, git, launch) == STOPPED
     assert git.calls == []
@@ -291,7 +291,7 @@ def test_a_git_failure_starts_nothing(env: dict[str, str], step: str) -> None:
     assert launch.argv is None
 
 
-@pytest.mark.parametrize("missing", ["FLEET_SLOT", "FLEET_CLONE", "FLEET_ROLE"])
+@pytest.mark.parametrize("missing", ["FLEETWRIGHT_SLOT", "FLEETWRIGHT_CLONE", "FLEETWRIGHT_ROLE"])
 def test_a_unit_that_sets_no_slot_clone_or_role_is_refused(
     env: dict[str, str], missing: str
 ) -> None:
@@ -302,24 +302,28 @@ def test_a_unit_that_sets_no_slot_clone_or_role_is_refused(
 
 
 def test_a_slot_name_cannot_walk_out_of_the_slots_directory(env: dict[str, str]) -> None:
-    env["FLEET_SLOT"] = "../agent01"
+    env["FLEETWRIGHT_SLOT"] = "../agent01"
     launch = Launch()
     assert run(env, FakeGit(), launch) == BAD_CONFIG
     assert launch.argv is None
 
 
 def test_each_prompt_is_fixed_apart_from_its_number() -> None:
-    for make in (fleet_agent.issue_prompt, fleet_agent.fix_prompt, fleet_agent.review_prompt):
+    for make in (
+        fleetwright_agent.issue_prompt,
+        fleetwright_agent.fix_prompt,
+        fleetwright_agent.review_prompt,
+    ):
         assert make(7).replace("7", "N") == make(12).replace("12", "N")
-    assert "Done when" in fleet_agent.issue_prompt(7)
-    assert "do not change" in fleet_agent.review_prompt(7).lower()
+    assert "Done when" in fleetwright_agent.issue_prompt(7)
+    assert "do not change" in fleetwright_agent.review_prompt(7).lower()
 
 
 def test_an_author_is_told_the_verdict_check_is_not_its_to_pass() -> None:
     # Two authors once saw `reviewer-verdict` red on their own pull requests and approved them.
-    for make in (fleet_agent.issue_prompt, fleet_agent.fix_prompt):
+    for make in (fleetwright_agent.issue_prompt, fleetwright_agent.fix_prompt):
         text = make(7)
         assert "`reviewer-verdict`" in text
         assert "Do not post review verdicts" in text
         assert "review-pr" in text
-    assert "checks pass and it is ready for review" not in fleet_agent.issue_prompt(7)
+    assert "checks pass and it is ready for review" not in fleetwright_agent.issue_prompt(7)

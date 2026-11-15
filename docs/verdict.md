@@ -8,7 +8,7 @@ after approval changes the head, so the approval no longer applies and the PR is
 The reviewer posts a PR comment with this marker on a line of its own, followed by a readable summary:
 
 ```
-<!-- fleet-verdict v1 {"sha": "<40 lowercase hex>", "verdict": "approve"} -->
+<!-- fleetwright-verdict v1 {"sha": "<40 lowercase hex>", "verdict": "approve"} -->
 ```
 
 `verdict` is `approve` or `request_changes`. Extra fields (`reviewer`, `findings`) are allowed and ignored.
@@ -38,12 +38,12 @@ jobs:
   verdict:
     if: github.event_name == 'pull_request' || github.event.issue.pull_request
     permissions: {contents: read, checks: write, pull-requests: read, issues: read}
-    uses: glennmcd/fleet-kit/.github/workflows/verdict.yml@<commit sha> # <tag>
+    uses: glennmcd/fleetwright/.github/workflows/verdict.yml@<commit sha> # <tag>
     with:
       kit-ref: <the same commit sha>
 ```
 
-Settings, in the repository's `.fleet-gates.json` on its default branch:
+Settings, in the repository's `.fleetwright-gates.json` on its default branch:
 
 ```json
 "verdict": {"reviewers": ["glennmcd"], "exempt_branches": ["release-please--"]}

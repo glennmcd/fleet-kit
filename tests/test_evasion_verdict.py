@@ -18,7 +18,7 @@ T3 = "2026-11-13T12:00:00Z"
 
 
 def marker(sha: str = HEAD, v: str = "approve", **extra: object) -> str:
-    return f"<!-- fleet-verdict v1 {json.dumps({'sha': sha, 'verdict': v, **extra})} -->"
+    return f"<!-- fleetwright-verdict v1 {json.dumps({'sha': sha, 'verdict': v, **extra})} -->"
 
 
 def comment(
@@ -123,7 +123,7 @@ def test_a_missing_config_file_is_an_error_not_an_empty_config(tmp_path: Path) -
 
 
 def test_a_config_that_is_not_json_is_an_error(tmp_path: Path) -> None:
-    (tmp_path / ".fleet-gates.json").write_text("{nope", encoding="utf-8")
+    (tmp_path / ".fleetwright-gates.json").write_text("{nope", encoding="utf-8")
     with pytest.raises(SystemExit, match="not valid JSON"):
         verdict.main(["--repo", "o/r", "--pr", "1", "--root", str(tmp_path)])
 
@@ -194,21 +194,21 @@ def test_two_markers_in_one_comment_are_ambiguous_and_ignored() -> None:
 @pytest.mark.parametrize(
     "body",
     [
-        '<!-- fleet-verdict v2 {"sha": "%s", "verdict": "approve"} -->' % HEAD,
-        '<!-- fleet-verdict {"sha": "%s", "verdict": "approve"} -->' % HEAD,
+        '<!-- fleetwright-verdict v2 {"sha": "%s", "verdict": "approve"} -->' % HEAD,
+        '<!-- fleetwright-verdict {"sha": "%s", "verdict": "approve"} -->' % HEAD,
         '<!-- Fleet-Verdict v1 {"sha": "%s", "verdict": "approve"} -->' % HEAD,
         '<!-- fleet‑verdict v1 {"sha": "%s", "verdict": "approve"} -->' % HEAD,
-        '<!-- fleet-verdict v1 {"sha": "%s", "verdict": "APPROVE"} -->' % HEAD,
-        '<!-- fleet-verdict v1 {"sha": "%s", "verdict": "approved"} -->' % HEAD,
-        '<!-- fleet-verdict v1 {"sha": "%s", "verdict": "approve "} -->' % HEAD,
-        '<!-- fleet-verdict v1 {"sha": "%s", "verdict": "lgtm"} -->' % HEAD,
-        '<!-- fleet-verdict v1 {"sha": "%s"} -->' % HEAD,
-        '<!-- fleet-verdict v1 {"verdict": "approve"} -->',
-        '<!-- fleet-verdict v1 {"sha": %d, "verdict": "approve"} -->' % 1,
-        '<!-- fleet-verdict v1 {"sha": ["%s"], "verdict": "approve"} -->' % HEAD,
-        "<!-- fleet-verdict v1 {not json} -->",
-        "<!-- fleet-verdict v1 [] -->",
-        '<!-- fleet-verdict v1 {"sha": "%s", "verdict": "approve"}' % HEAD,
+        '<!-- fleetwright-verdict v1 {"sha": "%s", "verdict": "APPROVE"} -->' % HEAD,
+        '<!-- fleetwright-verdict v1 {"sha": "%s", "verdict": "approved"} -->' % HEAD,
+        '<!-- fleetwright-verdict v1 {"sha": "%s", "verdict": "approve "} -->' % HEAD,
+        '<!-- fleetwright-verdict v1 {"sha": "%s", "verdict": "lgtm"} -->' % HEAD,
+        '<!-- fleetwright-verdict v1 {"sha": "%s"} -->' % HEAD,
+        '<!-- fleetwright-verdict v1 {"verdict": "approve"} -->',
+        '<!-- fleetwright-verdict v1 {"sha": %d, "verdict": "approve"} -->' % 1,
+        '<!-- fleetwright-verdict v1 {"sha": ["%s"], "verdict": "approve"} -->' % HEAD,
+        "<!-- fleetwright-verdict v1 {not json} -->",
+        "<!-- fleetwright-verdict v1 [] -->",
+        '<!-- fleetwright-verdict v1 {"sha": "%s", "verdict": "approve"}' % HEAD,
         "",
     ],
 )

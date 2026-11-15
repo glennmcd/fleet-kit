@@ -78,13 +78,19 @@ def validate(rules: list[dict[str, Any]]) -> list[Finding]:
         if not r.get("incident"):
             found.append(
                 Finding(
-                    ".fleet-gates.json", 1, "audit-rule", f"rule `{r.get('id')}` cites no incident"
+                    ".fleetwright-gates.json",
+                    1,
+                    "audit-rule",
+                    f"rule `{r.get('id')}` cites no incident",
                 )
             )
         if "id" not in r or "pattern" not in r:
             found.append(
                 Finding(
-                    ".fleet-gates.json", 1, "audit-rule", "every rule needs an id and a pattern"
+                    ".fleetwright-gates.json",
+                    1,
+                    "audit-rule",
+                    "every rule needs an id and a pattern",
                 )
             )
     return found

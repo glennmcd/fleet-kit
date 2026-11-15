@@ -6,7 +6,7 @@ ones on the base branch and any loosening fails: a higher file-size cap or excep
 exception, a removed or disabled audit rule, a removed obligation or a narrower `also`, a smaller
 duplication window, a larger duplication baseline. Loosening needs a person, who can change the base branch.
 
-Run with `--base <commit>`: the base config is read with `git show <base>:.fleet-gates.json`.
+Run with `--base <commit>`: the base config is read with `git show <base>:.fleetwright-gates.json`.
 """
 
 from __future__ import annotations
@@ -118,7 +118,9 @@ def check(root: Path, config: dict[str, Any], args: argparse.Namespace) -> list[
     if old_text is None:
         return []  # the config is new on this branch: nothing to loosen yet
     found = compare(json.loads(old_text), config)
-    path = config.get("duplication", {}).get("baseline", ".fleet-gates/duplication-baseline.json")
+    path = config.get("duplication", {}).get(
+        "baseline", ".fleetwright-gates/duplication-baseline.json"
+    )
     old_base = _show(root, args.base, path)
     new_file = root / path
     if old_base is not None and new_file.exists():

@@ -4,8 +4,8 @@
 # ///
 """The allocator: one pass that gives free slots their next piece of work.
 
-    fleet_allocate.py                    one pass (the fleet-allocate timer runs it every 2 minutes)
-    fleet_allocate.py --dry-run          print what it would assign; write and start nothing
+    fleetwright_allocate.py                    one pass (the fleetwright-allocate timer runs it every 2 minutes)
+    fleetwright_allocate.py --dry-run          print what it would assign; write and start nothing
 
 There are three kinds of work, all read from GitHub:
 
@@ -27,14 +27,14 @@ A slot is free when its unit is inactive. A finished slot's assignment file is r
 failed unit keeps its file and holds its work until a person looks (``systemctl reset-failed``). The pass does
 nothing while the stop flag exists. It reads GitHub with the ``gh`` CLI and writes nothing there.
 
-Configuration, ``/etc/fleet/fleet.json``::
+Configuration, ``/etc/fleetwright/fleetwright.json``::
 
     {"repo": "owner/name", "slots": ["agent01", "agent02"], "review_slots": ["review01"],
      "lanes": {"feature": 3, "fix": 2, "tooling": 1}}
 
 Optional: ``in_flight_share`` (0.67), ``max_runs_per_issue`` (4), ``ready_label`` ("agent-ready"). Run counts
-and reviewed heads are kept in ``/var/lib/fleet/state.json``. The reviewers whose verdicts count are read from
-the repository's ``.fleet-gates.json``, as the merge check reads them.
+and reviewed heads are kept in ``/var/lib/fleetwright/state.json``. The reviewers whose verdicts count are read from
+the repository's ``.fleetwright-gates.json``, as the merge check reads them.
 """
 
 from __future__ import annotations
@@ -56,11 +56,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import fleet_stop
+import fleetwright_stop
 from gates.verdict import Comment, decide
 
-DEFAULT_CONFIG = "/etc/fleet/fleet.json"
-FLEET_DIR = "/var/lib/fleet"
+DEFAULT_CONFIG = "/etc/fleetwright/fleetwright.json"
+FLEETWRIGHT_DIR = "/var/lib/fleetwright"
 AUTHOR_RE = re.compile(r"agent[0-9]{2}")
 REVIEW_RE = re.compile(r"review[0-9]{2}")
 LANE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
@@ -419,7 +419,9 @@ def _systemctl(args: Sequence[str]) -> tuple[int, str]:
 
 
 def unit_for(slot: str) -> str:
-    return f"fleet-review@{slot}" if REVIEW_RE.fullmatch(slot) else f"fleet-agent@{slot}"
+    return (
+        f"fleetwright-review@{slot}" if REVIEW_RE.fullmatch(slot) else f"fleetwright-agent@{slot}"
+    )
 
 
 def read_assignment(path: Path) -> Assignment | None:
@@ -451,8 +453,8 @@ def read_slots(cfg: Config, slots_dir: Path, systemctl: Systemctl) -> list[Slot]
 
 
 def fetch_reviewers(repo: str, gh: Gh) -> list[str]:
-    """The accounts whose verdicts count, from the repository's .fleet-gates.json on its default branch."""
-    data = json.loads(gh(["api", f"repos/{repo}/contents/.fleet-gates.json"]))
+    """The accounts whose verdicts count, from the repository's .fleetwright-gates.json on its default branch."""
+    data = json.loads(gh(["api", f"repos/{repo}/contents/.fleetwright-gates.json"]))
     config = json.loads(base64.b64decode(data["content"], validate=False).decode("utf-8"))
     reviewers = config.get("verdict", {}).get("reviewers", [])
     return [r for r in reviewers if isinstance(r, str)]
@@ -636,7 +638,7 @@ def _lock(path: Path) -> Iterator[None]:
 
 def run_pass(
     cfg: Config,
-    fleet_dir: Path,
+    fleetwright_dir: Path,
     gh: Gh,
     systemctl: Systemctl,
     rng: random.Random,
@@ -644,14 +646,14 @@ def run_pass(
     stop_file: Path,
     now: float,
 ) -> int:
-    note = fleet_stop.status(stop_file)
+    note = fleetwright_stop.status(stop_file)
     if note is not None:
-        print(f"fleet_allocate: the fleet is stopped, assigning nothing: {note}")
+        print(f"fleetwright_allocate: the fleet is stopped, assigning nothing: {note}")
         return 0
     # Every read happens before anything is written, so a failure leaves the machine as it was.
-    slots_dir = fleet_dir / "slots"
+    slots_dir = fleetwright_dir / "slots"
     slots = read_slots(cfg, slots_dir, systemctl)
-    state = load_state(fleet_dir / "state.json")
+    state = load_state(fleetwright_dir / "state.json")
     reviewers = fetch_reviewers(cfg.repo, gh)
     pulls = fetch_pulls(cfg, reviewers, gh)
     merged = fetch_merged(cfg, gh, now)  # before the issues, so a merge between the reads is seen
@@ -680,13 +682,13 @@ def run_pass(
             # Give the work back: the next pass can hand it out again, and no run is counted.
             path.unlink(missing_ok=True)
             print(
-                f"fleet_allocate: could not start {unit_for(slot)}; {a.text()} goes back",
+                f"fleetwright_allocate: could not start {unit_for(slot)}; {a.text()} goes back",
                 file=sys.stderr,
             )
             failed += 1
             continue
         record(state, a, heads.get(a.number, "") if a.kind == "review" else "")
-    save_state(fleet_dir / "state.json", state)
+    save_state(fleetwright_dir / "state.json", state)
     return 1 if failed else 0
 
 
@@ -701,23 +703,23 @@ def main(
     rng: random.Random | None = None,
     now: Callable[[], float] = time.time,
 ) -> int:
-    parser = argparse.ArgumentParser(prog="fleet_allocate")
-    parser.add_argument("--config", default=os.environ.get("FLEET_CONFIG") or DEFAULT_CONFIG)
-    parser.add_argument("--fleet-dir", default=FLEET_DIR)
+    parser = argparse.ArgumentParser(prog="fleetwright_allocate")
+    parser.add_argument("--config", default=os.environ.get("FLEETWRIGHT_CONFIG") or DEFAULT_CONFIG)
+    parser.add_argument("--fleetwright-dir", default=FLEETWRIGHT_DIR)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
         cfg = parse_config(json.loads(Path(args.config).read_text(encoding="utf-8")))
     except (OSError, ValueError) as exc:
-        print(f"fleet_allocate: {args.config}: {exc}", file=sys.stderr)
+        print(f"fleetwright_allocate: {args.config}: {exc}", file=sys.stderr)
         return 2
-    fleet_dir = Path(args.fleet_dir)
-    stop_file = Path(os.environ.get("FLEET_STOP_FILE") or fleet_stop.DEFAULT_STOP_FILE)
+    fleetwright_dir = Path(args.fleetwright_dir)
+    stop_file = Path(os.environ.get("FLEETWRIGHT_STOP_FILE") or fleetwright_stop.DEFAULT_STOP_FILE)
     try:
-        with _lock(fleet_dir / "allocate.lock"):
+        with _lock(fleetwright_dir / "allocate.lock"):
             return run_pass(
                 cfg,
-                fleet_dir,
+                fleetwright_dir,
                 gh,
                 systemctl,
                 rng or random.Random(),
@@ -731,19 +733,22 @@ def main(
             :300
         ]
         if "--slurp" in err:
-            err += (
-                " (gh is older than 2.48; install it from GitHub's apt repository, see fleet_check)"
-            )
+            err += " (gh is older than 2.48; install it from GitHub's apt repository, see fleetwright_check)"
         print(
-            f"fleet_allocate: {_command(exc.cmd)} failed: {err}; nothing changed", file=sys.stderr
+            f"fleetwright_allocate: {_command(exc.cmd)} failed: {err}; nothing changed",
+            file=sys.stderr,
         )
         return 1
     except subprocess.TimeoutExpired as exc:
-        print(f"fleet_allocate: {_command(exc.cmd)} timed out; nothing changed", file=sys.stderr)
+        print(
+            f"fleetwright_allocate: {_command(exc.cmd)} timed out; nothing changed", file=sys.stderr
+        )
         return 1
     except (PassError, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         # ValueError covers unreadable JSON and base64 from GitHub or the state file.
-        print(f"fleet_allocate: {type(exc).__name__}: {exc}; nothing changed", file=sys.stderr)
+        print(
+            f"fleetwright_allocate: {type(exc).__name__}: {exc}; nothing changed", file=sys.stderr
+        )
         return 1
 
 

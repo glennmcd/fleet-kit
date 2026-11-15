@@ -10,9 +10,9 @@ import sys
 import textwrap
 from pathlib import Path
 
-import fleet_stream
+import fleetwright_stream
 import pytest
-from fleet_stream import mask, summarize_lines
+from fleetwright_stream import mask, summarize_lines
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "stream"
 
@@ -110,7 +110,7 @@ def test_a_long_or_multiline_command_is_cut_to_one_line() -> None:
         [assistant({"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": cmd}})]
     )
     assert len(out) == 1 and "\n" not in out[0]
-    assert len(out[0]) <= len("tool Bash: ") + fleet_stream.ARG_MAX + 1
+    assert len(out[0]) <= len("tool Bash: ") + fleetwright_stream.ARG_MAX + 1
 
 
 def test_a_failed_tool_without_an_exit_code_says_error_and_nothing_more() -> None:
@@ -132,7 +132,7 @@ def test_tool_output_is_never_printed() -> None:
 def test_what_the_agent_says_is_its_first_line_cut_short() -> None:
     long = "First line " + "x" * 500 + "\nsecond line"
     out = summarize_lines([assistant({"type": "text", "text": "\n\n" + long})])
-    assert out == ["say: " + ("First line " + "x" * 500)[: fleet_stream.SAY_MAX] + "…"]
+    assert out == ["say: " + ("First line " + "x" * 500)[: fleetwright_stream.SAY_MAX] + "…"]
 
 
 def test_thinking_and_empty_text_print_nothing() -> None:
@@ -160,7 +160,7 @@ def test_a_line_that_is_not_json_is_shown_cut_short_and_unknown_events_are_skipp
         ["Error: something broke " + "y" * 500, event(type="stream_event"), "[1, 2]"]
     )
     assert out[0].startswith("unparsed: Error: something broke ")
-    assert len(out[0]) <= len("unparsed: ") + fleet_stream.SAY_MAX + 1
+    assert len(out[0]) <= len("unparsed: ") + fleetwright_stream.SAY_MAX + 1
     assert out[1:] == ["unparsed: [1, 2]"]
 
 
@@ -189,13 +189,13 @@ def test_a_secret_in_a_command_is_masked() -> None:
 
 def test_masking_takes_its_secrets_from_the_environment_and_skips_short_values() -> None:
     env = {"GH_TOKEN": "ghp_longenoughvalue", "ANTHROPIC_API_KEY": "ab", "PATH": "/usr/bin"}
-    assert fleet_stream.secrets_from(env) == ("ghp_longenoughvalue",)
+    assert fleetwright_stream.secrets_from(env) == ("ghp_longenoughvalue",)
     assert mask("x ghp_longenoughvalue y", ("ghp_longenoughvalue",)) == "x *** y"
 
 
 def test_a_secret_split_by_the_cut_is_still_masked() -> None:
     secret = "ghp_" + "s" * 40
-    cmd = "x" * (fleet_stream.ARG_MAX - 10) + secret
+    cmd = "x" * (fleetwright_stream.ARG_MAX - 10) + secret
     line = assistant({"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": cmd}})
     out = summarize_lines([line], (secret,))
     assert "ghp_" not in out[0] and "ssss" not in out[0]
@@ -226,13 +226,13 @@ def fake_claude(tmp_path: Path, code: str) -> list[str]:
 def test_the_runner_prints_each_step_and_exits_with_the_agents_code(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], code: str
 ) -> None:
-    assert fleet_stream.run(fake_claude(tmp_path, code), {}) == int(code)
+    assert fleetwright_stream.run(fake_claude(tmp_path, code), {}) == int(code)
     out = capsys.readouterr().out.splitlines()
     assert out == journal("ok-fail-denied.jsonl")
 
 
 def test_a_runner_given_no_program_reports_it(capsys: pytest.CaptureFixture[str]) -> None:
-    assert fleet_stream.run(["/nonexistent/claude-binary"], {}) == 127
+    assert fleetwright_stream.run(["/nonexistent/claude-binary"], {}) == 127
     assert "could not start" in capsys.readouterr().err
 
 
@@ -244,9 +244,9 @@ def test_a_stopped_unit_ends_the_agent_and_reports_the_signal(tmp_path: Path) ->
     runner = textwrap.dedent(
         f"""
         import sys
-        sys.path.insert(0, {str(Path(fleet_stream.__file__).parent)!r})
-        import fleet_stream
-        sys.exit(fleet_stream.run({fake_claude(tmp_path, "hang")!r}, {{}}))
+        sys.path.insert(0, {str(Path(fleetwright_stream.__file__).parent)!r})
+        import fleetwright_stream
+        sys.exit(fleetwright_stream.run({fake_claude(tmp_path, "hang")!r}, {{}}))
         """
     )
     proc = subprocess.Popen(

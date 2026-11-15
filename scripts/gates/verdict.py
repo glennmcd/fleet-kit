@@ -5,7 +5,7 @@ and tied to the exact commit that will merge, so a push after approval cannot ri
 
 The reviewer posts a PR comment with a marker on a line of its own:
 
-    <!-- fleet-verdict v1 {"sha": "<40 hex>", "verdict": "approve"} -->
+    <!-- fleetwright-verdict v1 {"sha": "<40 hex>", "verdict": "approve"} -->
 
 `verdict` is `approve` or `request_changes`. This script reads the PR's comments, decides whether the head is
 approved, and publishes the answer as a check run named `reviewer-verdict` on the head SHA. A new push is a new
@@ -20,7 +20,7 @@ A verdict counts only if all of these hold, so nothing a PR author or a quoted r
   - no later verdict at the same head says otherwise: the newest wins.
 A draft PR never passes. A head branch starting with a `verdict.exempt_branches` prefix (release-please's) passes.
 
-Config (`.fleet-gates.json`):  "verdict": {"reviewers": ["login"], "exempt_branches": ["release-please--"]}
+Config (`.fleetwright-gates.json`):  "verdict": {"reviewers": ["login"], "exempt_branches": ["release-please--"]}
 
 Run: `python -m gates.verdict --repo owner/name --pr 7` with `GH_TOKEN` set. It never reads PR code.
 """
@@ -41,7 +41,7 @@ from gates.common import load_config
 
 CHECK_NAME = "reviewer-verdict"
 VERDICTS = {"approve", "request_changes"}
-MARKER = re.compile(r"^<!--\s*fleet-verdict\s+v1\s+(\{.*\})\s*-->[ \t]*$")
+MARKER = re.compile(r"^<!--\s*fleetwright-verdict\s+v1\s+(\{.*\})\s*-->[ \t]*$")
 FENCE = re.compile(r"^ {0,3}(```|~~~)")
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 

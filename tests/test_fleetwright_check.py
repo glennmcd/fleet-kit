@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import fleet_check
+import fleetwright_check
 import pytest
-from fleet_check import Machine, run_checks
+from fleetwright_check import Machine, run_checks
 
 TOKEN = "ghp_secretsecretsecret"
 KEY = "sk-ant-secretsecret"
@@ -19,21 +19,21 @@ class Fake:
     def __init__(self, role: str = "review") -> None:
         slot = "review01" if role == "review" else "agent01"
         self.env = {
-            "FLEET_SLOT": slot,
-            "FLEET_ROLE": role,
-            "FLEET_CLONE": f"/home/{slot}/repo",
+            "FLEETWRIGHT_SLOT": slot,
+            "FLEETWRIGHT_ROLE": role,
+            "FLEETWRIGHT_CLONE": f"/home/{slot}/repo",
             "CC_PRACTICES_UNATTENDED": "1",
             "GH_TOKEN": TOKEN,
             "ANTHROPIC_API_KEY": KEY,
         }
         if role == "review":
-            self.env["FLEET_REVIEWER_LOGIN"] = "g26work"
+            self.env["FLEETWRIGHT_REVIEWER_LOGIN"] = "g26work"
         self.tools = {"uv", "claude", "gh", "git", "rtk"}
         self.login = "g26work" if role == "review" else "glennmcd"
         self.gh_version = "2.104.0"
         self.gh_slurp = True
         self.porcelain = ""
-        self.plugins: str | None = "fleet-kit@fleet-kit\ncc-practices@cc-practices\n"
+        self.plugins: str | None = "fleetwright@fleetwright\ncc-practices@cc-practices\n"
         self.paths = {f"/home/{slot}/repo/.git"}
         self.home_mode = 0o700
         self.writable: set[str] = set()
@@ -95,7 +95,7 @@ def test_a_reviewer_signed_in_as_anyone_else_fails() -> None:
 
 def test_a_review_slot_without_its_expected_login_fails() -> None:
     fake = Fake()
-    del fake.env["FLEET_REVIEWER_LOGIN"]
+    del fake.env["FLEETWRIGHT_REVIEWER_LOGIN"]
     assert not results(fake)["github"][0]
 
 
@@ -150,7 +150,7 @@ def test_a_gh_that_will_not_run_fails_the_version_check() -> None:
 
 def test_a_missing_plugin_is_named() -> None:
     fake = Fake()
-    fake.plugins = "fleet-kit@fleet-kit\n"
+    fake.plugins = "fleetwright@fleetwright\n"
     ok, detail = results(fake)["plugins"]
     assert not ok and "cc-practices" in detail
 
@@ -173,7 +173,7 @@ def test_a_dirty_or_missing_clone_fails() -> None:
 
 def test_a_home_open_to_others_fails_and_an_admin_acl_does_not() -> None:
     fake = Fake()
-    fake.home_mode = 0o750  # the fleet-admin ACL shows as group bits
+    fake.home_mode = 0o750  # the fleetwright-admin ACL shows as group bits
     assert results(fake)["home"][0]
     fake.home_mode = 0o755
     assert not results(fake)["home"][0]
@@ -181,22 +181,22 @@ def test_a_home_open_to_others_fails_and_an_admin_acl_does_not() -> None:
 
 def test_a_sandbox_that_lets_the_slot_write_the_fleet_dir_or_read_secrets_fails() -> None:
     fake = Fake()
-    fake.writable = {"/var/lib/fleet"}
+    fake.writable = {"/var/lib/fleetwright"}
     assert not results(fake)["sandbox"][0]
     fake = Fake()
-    fake.listable = {"/etc/fleet"}
+    fake.listable = {"/etc/fleetwright"}
     assert not results(fake)["sandbox"][0]
 
 
 def test_the_stop_flag_is_reported() -> None:
     fake = Fake()
-    fake.paths.add("/var/lib/fleet/STOP")
+    fake.paths.add("/var/lib/fleetwright/STOP")
     assert not results(fake)["stop flag"][0]
 
 
 def test_a_slot_whose_role_does_not_match_its_name_fails() -> None:
     fake = Fake()
-    fake.env["FLEET_ROLE"] = "author"
+    fake.env["FLEETWRIGHT_ROLE"] = "author"
     assert not results(fake)["slot"][0]
     fake = Fake()
     fake.env["CC_PRACTICES_UNATTENDED"] = "0"
@@ -207,7 +207,7 @@ def test_no_secret_value_is_ever_printed(capsys: pytest.CaptureFixture[str]) -> 
     fake = Fake()
     fake.login = "glennmcd"  # a failing run prints the most detail
     fake.tools.discard("uv")
-    code = fleet_check.report(fake.machine())
+    code = fleetwright_check.report(fake.machine())
     out = capsys.readouterr()
     assert code == 1
     for secret in (TOKEN, KEY):
@@ -217,7 +217,7 @@ def test_no_secret_value_is_ever_printed(capsys: pytest.CaptureFixture[str]) -> 
 def test_the_report_marks_each_line_and_ends_with_a_count(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert fleet_check.report(Fake().machine()) == 0
+    assert fleetwright_check.report(Fake().machine()) == 0
     lines = capsys.readouterr().out.splitlines()
     assert all(line.startswith(("ok    ", "FAIL  ")) for line in lines[:-1])
     assert lines[-1] == "review01: every check passed"

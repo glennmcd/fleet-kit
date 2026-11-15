@@ -9,8 +9,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import fleet_stop
-import fleet_watchdog
+import fleetwright_stop
+import fleetwright_watchdog
 import pytest
 
 REPO = "o/r"
@@ -21,7 +21,7 @@ OLD = "2027-01-15T04:00:00Z"
 
 
 def marker(sha: str, verdict: str) -> str:
-    return f'<!-- fleet-verdict v1 {{"sha": "{sha}", "verdict": "{verdict}"}} -->\n\nfindings'
+    return f'<!-- fleetwright-verdict v1 {{"sha": "{sha}", "verdict": "{verdict}"}} -->\n\nfindings'
 
 
 class FakeGitHub:
@@ -48,7 +48,7 @@ class FakeGitHub:
             return json.dumps(self.pulls)
         if "/check-runs" in path:
             return json.dumps({"check_runs": self.main})
-        if path.endswith("/contents/.fleet-gates.json"):
+        if path.endswith("/contents/.fleetwright-gates.json"):
             body = json.dumps({"verdict": {"reviewers": ["g26work"]}}).encode()
             return json.dumps({"content": base64.b64encode(body).decode()})
         if path.endswith("/comments"):
@@ -58,7 +58,7 @@ class FakeGitHub:
 
 class FakeSystemd:
     def __init__(self, states: dict[str, str] | None = None) -> None:
-        self.states = {"fleet-allocate.timer": "active", **(states or {})}
+        self.states = {"fleetwright-allocate.timer": "active", **(states or {})}
         self.calls: list[list[str]] = []
 
     def __call__(self, args: Sequence[str]) -> tuple[int, str]:
@@ -104,7 +104,7 @@ def verdict(sha: str, kind: str) -> dict[str, Any]:
 @pytest.fixture
 def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "slots").mkdir()
-    (tmp_path / "fleet.json").write_text(
+    (tmp_path / "fleetwright.json").write_text(
         json.dumps(
             {
                 "repo": REPO,
@@ -115,7 +115,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("FLEET_STOP_FILE", str(tmp_path / "STOP"))
+    monkeypatch.setenv("FLEETWRIGHT_STOP_FILE", str(tmp_path / "STOP"))
     return tmp_path
 
 
@@ -126,8 +126,8 @@ def run(
     journal: Mapping[str, float | None] | None = None,
 ) -> int:
     last = journal or {}
-    return fleet_watchdog.main(
-        ["--config", str(fleet / "fleet.json"), "--fleet-dir", str(fleet)],
+    return fleetwright_watchdog.main(
+        ["--config", str(fleet / "fleetwright.json"), "--fleetwright-dir", str(fleet)],
         gh=gh or FakeGitHub(),
         systemctl=systemd or FakeSystemd(),
         journal=lambda unit: last.get(unit, NOW - 60),
@@ -142,7 +142,7 @@ def lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
 def test_a_quiet_fleet_is_clean(fleet: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert run(fleet) == 0
     assert lines(capsys) == ["watchdog: clean"]
-    assert fleet_stop.status(fleet / "STOP") is None
+    assert fleetwright_stop.status(fleet / "STOP") is None
 
 
 def test_it_only_reads_github(fleet: Path) -> None:
@@ -156,9 +156,9 @@ def test_it_only_reads_github(fleet: Path) -> None:
 
 
 def test_a_failed_slot_is_caught(fleet: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert run(fleet, systemd=FakeSystemd({"fleet-agent@agent02": "failed"})) == 0
+    assert run(fleet, systemd=FakeSystemd({"fleetwright-agent@agent02": "failed"})) == 0
     out = lines(capsys)
-    assert out[0].startswith("caught failed-unit: fleet-agent@agent02 failed")
+    assert out[0].startswith("caught failed-unit: fleetwright-agent@agent02 failed")
     assert "reset-failed" in out[0]
     assert out[-1] == "watchdog: caught 1"
 
@@ -166,20 +166,26 @@ def test_a_failed_slot_is_caught(fleet: Path, capsys: pytest.CaptureFixture[str]
 def test_a_failed_allocator_and_a_stopped_timer_are_caught(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    systemd = FakeSystemd({"fleet-allocate.service": "failed", "fleet-allocate.timer": "inactive"})
+    systemd = FakeSystemd(
+        {"fleetwright-allocate.service": "failed", "fleetwright-allocate.timer": "inactive"}
+    )
     assert run(fleet, systemd=systemd) == 0
     out = lines(capsys)
-    assert any(ln.startswith("caught failed-unit: fleet-allocate.service failed") for ln in out)
-    assert any(ln.startswith("caught failed-unit: fleet-allocate.timer is inactive") for ln in out)
+    assert any(
+        ln.startswith("caught failed-unit: fleetwright-allocate.service failed") for ln in out
+    )
+    assert any(
+        ln.startswith("caught failed-unit: fleetwright-allocate.timer is inactive") for ln in out
+    )
     assert out[-1] == "watchdog: caught 2"
 
 
 def test_a_unit_state_it_cannot_read_is_missed(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert run(fleet, systemd=FakeSystemd({"fleet-review@review01": ""})) == 1
+    assert run(fleet, systemd=FakeSystemd({"fleetwright-review@review01": ""})) == 1
     out = lines(capsys)
-    assert out[0].startswith("missed failed-unit: cannot tell whether fleet-review@review01")
+    assert out[0].startswith("missed failed-unit: cannot tell whether fleetwright-review@review01")
     assert out[-1] == "watchdog: missed 1"
 
 
@@ -189,8 +195,8 @@ def test_a_unit_state_it_cannot_read_is_missed(
 def test_a_running_agent_that_logged_recently_is_fine(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    systemd = FakeSystemd({"fleet-agent@agent01": "active"})
-    assert run(fleet, systemd=systemd, journal={"fleet-agent@agent01": NOW - 14 * 60}) == 0
+    systemd = FakeSystemd({"fleetwright-agent@agent01": "active"})
+    assert run(fleet, systemd=systemd, journal={"fleetwright-agent@agent01": NOW - 14 * 60}) == 0
     assert lines(capsys) == ["watchdog: clean"]
 
 
@@ -198,40 +204,42 @@ def test_a_running_agent_with_no_journal_line_for_too_long_is_caught(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (fleet / "slots" / "agent01").write_text("issue 12\n", encoding="utf-8")
-    systemd = FakeSystemd({"fleet-agent@agent01": "active", "fleet-review@review01": "activating"})
-    journal = {"fleet-agent@agent01": NOW - 23 * 60, "fleet-review@review01": NOW - 5}
+    systemd = FakeSystemd(
+        {"fleetwright-agent@agent01": "active", "fleetwright-review@review01": "activating"}
+    )
+    journal = {"fleetwright-agent@agent01": NOW - 23 * 60, "fleetwright-review@review01": NOW - 5}
     assert run(fleet, systemd=systemd, journal=journal) == 0
     out = lines(capsys)
     assert out[0] == (
-        "caught stalled: fleet-agent@agent01 (issue 12) has logged nothing for 23 min "
-        "(limit 15); `systemctl stop fleet-agent@agent01` frees the slot"
+        "caught stalled: fleetwright-agent@agent01 (issue 12) has logged nothing for 23 min "
+        "(limit 15); `systemctl stop fleetwright-agent@agent01` frees the slot"
     )
     assert out[-1] == "watchdog: caught 1"
 
 
 def test_an_idle_slot_is_never_stalled(fleet: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert run(fleet, journal={"fleet-agent@agent01": NOW - 9999 * 60}) == 0
+    assert run(fleet, journal={"fleetwright-agent@agent01": NOW - 9999 * 60}) == 0
     assert lines(capsys) == ["watchdog: clean"]
 
 
 def test_the_stall_limit_comes_from_the_config(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    raw = json.loads((fleet / "fleet.json").read_text(encoding="utf-8"))
+    raw = json.loads((fleet / "fleetwright.json").read_text(encoding="utf-8"))
     raw["watchdog"] = {"stall_minutes": 30}
-    (fleet / "fleet.json").write_text(json.dumps(raw), encoding="utf-8")
-    systemd = FakeSystemd({"fleet-agent@agent01": "active"})
-    assert run(fleet, systemd=systemd, journal={"fleet-agent@agent01": NOW - 23 * 60}) == 0
+    (fleet / "fleetwright.json").write_text(json.dumps(raw), encoding="utf-8")
+    systemd = FakeSystemd({"fleetwright-agent@agent01": "active"})
+    assert run(fleet, systemd=systemd, journal={"fleetwright-agent@agent01": NOW - 23 * 60}) == 0
     assert lines(capsys) == ["watchdog: clean"]
 
 
 def test_a_journal_it_cannot_read_is_missed(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    systemd = FakeSystemd({"fleet-agent@agent01": "active"})
-    assert run(fleet, systemd=systemd, journal={"fleet-agent@agent01": None}) == 1
+    systemd = FakeSystemd({"fleetwright-agent@agent01": "active"})
+    assert run(fleet, systemd=systemd, journal={"fleetwright-agent@agent01": None}) == 1
     out = lines(capsys)
-    assert out[0].startswith("missed stalled: no journal line for fleet-agent@agent01")
+    assert out[0].startswith("missed stalled: no journal line for fleetwright-agent@agent01")
     assert "systemd-journal" in out[0]
 
 
@@ -245,24 +253,24 @@ def test_a_red_main_is_caught_and_stops_the_line(
     assert run(fleet, gh=gh) == 0
     out = lines(capsys)
     assert out[0] == "caught red-main: main is red at aaaaaaa (frontend); the line is now stopped"
-    note = fleet_stop.status(fleet / "STOP")
+    note = fleetwright_stop.status(fleet / "STOP")
     assert note is not None and note.startswith("watchdog: main is red at aaaaaaa (frontend)")
 
 
 def test_a_line_already_stopped_keeps_its_note(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    fleet_stop.stop("the operator's reason", fleet / "STOP")
+    fleetwright_stop.stop("the operator's reason", fleet / "STOP")
     assert run(fleet, gh=FakeGitHub(main=[check("backend", "timed_out")])) == 0
     assert "the line was already stopped" in lines(capsys)[0]
-    note = fleet_stop.status(fleet / "STOP")
+    note = fleetwright_stop.status(fleet / "STOP")
     assert note is not None and note.startswith("the operator's reason")
 
 
 @pytest.mark.parametrize("conclusion", ["success", "neutral", "skipped", "cancelled", None])
 def test_a_main_that_is_not_red_does_not_stop_the_line(fleet: Path, conclusion: str | None) -> None:
     assert run(fleet, gh=FakeGitHub(main=[check("backend", conclusion)])) == 0
-    assert fleet_stop.status(fleet / "STOP") is None
+    assert fleetwright_stop.status(fleet / "STOP") is None
 
 
 def test_a_main_it_cannot_read_is_missed_and_does_not_stop_the_line(
@@ -272,7 +280,7 @@ def test_a_main_it_cannot_read_is_missed_and_does_not_stop_the_line(
     out = lines(capsys)
     assert out[0].startswith("missed red-main: gh api repos/o/r/commits/HEAD/check-runs")
     assert "HTTP 502" in out[0] and "usage" not in out[0]
-    assert fleet_stop.status(fleet / "STOP") is None
+    assert fleetwright_stop.status(fleet / "STOP") is None
 
 
 # --- stuck pull requests --------------------------------------------------------------------------
@@ -311,8 +319,8 @@ def test_a_pr_that_moved_recently_is_not_stuck(
 @pytest.mark.parametrize(
     ("slot", "unit", "work"),
     [
-        ("agent01", "fleet-agent@agent01", "fix 3"),
-        ("review01", "fleet-review@review01", "review 7"),
+        ("agent01", "fleetwright-agent@agent01", "fix 3"),
+        ("review01", "fleetwright-review@review01", "review 7"),
     ],
 )
 def test_a_pr_a_running_slot_holds_is_not_stuck(
@@ -339,7 +347,7 @@ def test_pull_requests_it_cannot_read_are_missed_and_the_other_checks_still_run(
     fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     gh = FakeGitHub(fail="pr list", main=[check("backend", "failure")])
-    assert run(fleet, gh=gh, systemd=FakeSystemd({"fleet-agent@agent02": "failed"})) == 1
+    assert run(fleet, gh=gh, systemd=FakeSystemd({"fleetwright-agent@agent02": "failed"})) == 1
     out = lines(capsys)
     assert [ln.split(":")[0] for ln in out[:-1]] == [
         "caught failed-unit",
@@ -353,18 +361,20 @@ def test_pull_requests_it_cannot_read_are_missed_and_the_other_checks_still_run(
 
 
 def test_a_bad_config_is_refused(fleet: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (fleet / "fleet.json").write_text('{"repo": "o/r", "watchdog": {"stall_minutes": 0}}', "utf-8")
+    (fleet / "fleetwright.json").write_text(
+        '{"repo": "o/r", "watchdog": {"stall_minutes": 0}}', "utf-8"
+    )
     assert run(fleet) == 2
-    assert "fleet_watchdog" in capsys.readouterr().err
+    assert "fleetwright_watchdog" in capsys.readouterr().err
 
 
 def test_the_real_journal_reader_parses_the_last_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
-        assert cmd[:3] == ["journalctl", "-u", "fleet-agent@agent01"]
+        assert cmd[:3] == ["journalctl", "-u", "fleetwright-agent@agent01"]
         return subprocess.CompletedProcess(cmd, 0, '{"__REALTIME_TIMESTAMP": "1800000000500000"}\n')
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert fleet_watchdog._journal("fleet-agent@agent01") == 1_800_000_000.5
+    assert fleetwright_watchdog._journal("fleetwright-agent@agent01") == 1_800_000_000.5
 
 
 @pytest.mark.parametrize("stdout", ["", "-- No entries --\n", '{"MESSAGE": "x"}\n'])
@@ -374,4 +384,4 @@ def test_the_real_journal_reader_answers_none_when_there_is_nothing(
     monkeypatch.setattr(
         subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout)
     )
-    assert fleet_watchdog._journal("fleet-agent@agent01") is None
+    assert fleetwright_watchdog._journal("fleetwright-agent@agent01") is None

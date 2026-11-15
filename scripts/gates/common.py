@@ -1,7 +1,7 @@
 """Shared helpers for the CI gates: findings, config, path matching and git diffs.
 
 Every gate is a standard-library script that prints one `path:line: [rule] message` per finding and
-exits 1 if there is any. The target repository keeps its settings in `.fleet-gates.json`.
+exits 1 if there is any. The target repository keeps its settings in `.fleetwright-gates.json`.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-CONFIG_NAME = ".fleet-gates.json"
+CONFIG_NAME = ".fleetwright-gates.json"
 # Never scanned: the kit's own checkout in CI, dependency and VCS directories.
-ALWAYS_SKIP_DIRS = {".git", ".fleet-kit", "node_modules", ".venv", "__pycache__"}
+ALWAYS_SKIP_DIRS = {".git", ".fleetwright", "node_modules", ".venv", "__pycache__"}
 ISSUE_REF = re.compile(r"(?:#|/issues/|/pull/)\d+")
 
 
