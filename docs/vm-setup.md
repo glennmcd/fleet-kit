@@ -115,12 +115,14 @@ sudo git clone <the cc-practices repository> /opt/cc-practices-plugin
 
 ```bash
 sudo python3 /opt/fleet-kit/scripts/fleet_slot.py init --admin <you> --apply
-sudo python3 /opt/fleet-kit/scripts/fleet_slot.py add agent01 --repo https://github.com/<owner>/<name>.git --apply
+sudo python3 /opt/fleet-kit/scripts/fleet_slot.py add agent01 --repo https://github.com/<owner>/<name>.git --git-email <id>+<login>@users.noreply.github.com --apply
 sudo python3 /opt/fleet-kit/scripts/fleet_slot.py add review01 --repo https://github.com/<owner>/<name>.git --apply
 ```
 
 `init` creates the groups, the allocator's user, the `claude` login, `/var/lib/fleet`, the units, the polkit
-rule and the sshd file. `add` creates one slot's user and clone. Log in again to get the `fleet-admin` group.
+rule and the sshd file. `add` creates one slot's user and clone. An author slot also needs `--git-email`, the
+noreply address of the account whose token pushes, and commits as `agentNN (fleet)` at it. Print the address
+with that account's token: `gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"'`. Log in again to get the `fleet-admin` group.
 
 ## 4. Secrets and the config
 
@@ -189,7 +191,7 @@ directories are kept. Enable any new timer afterwards (step 6).
 ## Adding a slot
 
 ```bash
-sudo python3 /opt/fleet-kit/scripts/fleet_slot.py add agent03 --repo https://github.com/<owner>/<name>.git --apply
+sudo python3 /opt/fleet-kit/scripts/fleet_slot.py add agent03 --repo https://github.com/<owner>/<name>.git --git-email <id>+<login>@users.noreply.github.com --apply
 ```
 
 Then step 5 for the new slot, its check from step 6, and its name in `/etc/fleet/fleet.json`. The allocator

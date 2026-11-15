@@ -6,7 +6,8 @@
 
     fleet_slot.py init [--admin you]                                              print what it would do
     sudo fleet_slot.py init --admin you --apply                                   the machine, once
-    sudo fleet_slot.py add agent01 --repo https://github.com/owner/name.git --apply   an author slot
+    sudo fleet_slot.py add agent01 --repo https://github.com/owner/name.git --git-email ADDRESS --apply
+                                                                                  an author slot
     sudo fleet_slot.py add review01 --repo https://github.com/owner/name.git --apply  a review slot
     fleet_slot.py unit [--name fleet-review@.service]                             print the units
 
@@ -22,8 +23,11 @@ allocator with its secrets, and the admin reads their result in the journal.
 A slot is an OS user whose home holds one clone, ``/home/<slot>/repo``. The user is the boundary: it can
 write its home and nothing else. ``agentNN`` slots are authors: they work on issues and fix rounds.
 ``reviewNN`` slots are reviewers: they review pull requests and post verdicts as the reviewer's own GitHub
-account. ``systemctl start fleet-agent@agent01`` runs ``scripts/fleet_agent.py`` as that user with
-``FLEET_CLONE`` set, which turns on the stop switch and the write guard (docs/control-plane.md).
+account. An author slot commits in its clone as ``agentNN (fleet)`` at the address given with
+``--git-email``: the noreply address of the account whose token pushes, so GitHub links the commits to it
+and the name says which slot wrote them. ``systemctl start fleet-agent@agent01`` runs
+``scripts/fleet_agent.py`` as that user with ``FLEET_CLONE`` set, which turns on the stop switch and the
+write guard (docs/control-plane.md).
 
 Without ``--apply`` nothing is run: the commands and files are printed for the operator to read.
 ``--apply`` needs root, runs each command without a shell, and stops at the first one that fails. Both
@@ -70,6 +74,7 @@ REVIEW_RE = re.compile(r"review[0-9]{2}")
 REPO_RE = re.compile(r"https://[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)+")
 KIT_RE = re.compile(r"(/[A-Za-z0-9._-]+)+")
 USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+EMAIL_RE = re.compile(r"[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
 
 # The units fleet-admin may start, stop, restart and reset, written once for Python and polkit's
 # JavaScript. Each template accepts only its own kind of slot, so an author unit cannot run as a reviewer.
@@ -104,6 +109,15 @@ def validate_repo(repo: str) -> str:
             f"repo {repo!r}: give an https URL such as https://github.com/owner/name.git"
         )
     return repo
+
+
+def validate_email(email: str) -> str:
+    """A plain address. Not an option, and nothing git would read as more than one value."""
+    if email.startswith("-") or not EMAIL_RE.fullmatch(email):
+        raise ValueError(
+            f"git-email {email!r}: give an address such as 123+you@users.noreply.github.com"
+        )
+    return email
 
 
 def validate_admin(name: str) -> str:
@@ -419,10 +433,20 @@ def init_commands(admins: Sequence[str]) -> list[list[str]]:
     ]
 
 
-def setup_commands(slot: str, repo: str) -> list[list[str]]:
-    """What root runs to create the slot, in order. Each is an argument list, never a shell string."""
+def setup_commands(slot: str, repo: str, email: str | None = None) -> list[list[str]]:
+    """What root runs to create the slot, in order. Each is an argument list, never a shell string.
+
+    ``email`` is the address the slot commits at; an author slot must have one, a review slot never commits.
+    """
     validate_slot(slot)
     validate_repo(repo)
+    if email is not None:
+        validate_email(email)
+    elif AUTHOR_RE.fullmatch(slot):
+        raise ValueError(
+            f"slot {slot}: an author slot commits; give the address it commits at with --git-email, "
+            "the noreply address of the account whose token pushes"
+        )
     clone = clone_path(slot)
     home = f"/home/{slot}"
     group = REVIEW_GROUP if REVIEW_RE.fullmatch(slot) else AUTHOR_GROUP
@@ -438,6 +462,14 @@ def setup_commands(slot: str, repo: str) -> list[list[str]]:
         [*as_slot, "git", "clone", "--", repo, clone],
         # Pushes use the token in the unit's environment, through gh; nothing is stored in the clone.
         [*as_slot, "git", "-C", clone, "config", "credential.helper", "!gh auth git-credential"],
+        *(
+            [
+                [*as_slot, "git", "-C", clone, "config", "user.name", f"{slot} (fleet)"],
+                [*as_slot, "git", "-C", clone, "config", "user.email", email],
+            ]
+            if email
+            else []
+        ),
     ]
 
 
@@ -517,8 +549,8 @@ def init(admins: Sequence[str], kit: str, dest: str, apply: bool, run: Run, is_r
     return 0
 
 
-def add(slot: str, repo: str, apply: bool, run: Run, is_root: bool) -> int:
-    commands = setup_commands(slot, repo)
+def add(slot: str, repo: str, email: str | None, apply: bool, run: Run, is_root: bool) -> int:
+    commands = setup_commands(slot, repo, email)
     unit = "fleet-review" if REVIEW_RE.fullmatch(slot) else "fleet-agent"
     check = "fleet-check-review" if REVIEW_RE.fullmatch(slot) else "fleet-check-agent"
     if not apply:
@@ -555,6 +587,11 @@ def main(argv: list[str] | None = None, run: Run = _run, is_root: bool | None = 
     p = sub.add_parser("add", help="create a slot's user and clone")
     p.add_argument("slot")
     p.add_argument("--repo", required=True)
+    p.add_argument(
+        "--git-email",
+        help="the address the slot commits at (needed for an author slot): "
+        "the noreply address of the account whose token pushes",
+    )
     p.add_argument("--apply", action="store_true", help="run the commands instead of printing them")
     u = sub.add_parser("unit", help="print the unit files")
     u.add_argument("--kit", default=DEFAULT_KIT)
@@ -572,7 +609,7 @@ def main(argv: list[str] | None = None, run: Run = _run, is_root: bool | None = 
         root = _is_root() if is_root is None else is_root
         if args.command == "init":
             return init(args.admin, args.kit, args.dest, args.apply, run, root)
-        return add(args.slot, args.repo, args.apply, run, root)
+        return add(args.slot, args.repo, args.git_email, args.apply, run, root)
     except ValueError as exc:
         print(f"fleet_slot: {exc}", file=sys.stderr)
         return 2

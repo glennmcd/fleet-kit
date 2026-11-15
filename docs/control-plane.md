@@ -78,7 +78,8 @@ up the machine once, then each slot:
 ```bash
 uv run scripts/fleet_slot.py init --admin "$USER"                    # prints what it would do
 sudo uv run scripts/fleet_slot.py init --admin "$USER" --apply      # the machine, once
-sudo uv run scripts/fleet_slot.py add agent01 --repo https://github.com/owner/name.git --apply
+sudo uv run scripts/fleet_slot.py add agent01 --repo https://github.com/owner/name.git \
+    --git-email 123+you@users.noreply.github.com --apply
 sudo uv run scripts/fleet_slot.py add review01 --repo https://github.com/owner/name.git --apply
 ```
 
@@ -86,6 +87,9 @@ Without `--apply` they only print. `init` creates the groups and users of [Who n
 gives `/var/lib/fleet` to fleet-admin, and installs the units in [`systemd/`](../systemd), the polkit rule and
 the sshd file. `--kit` says where fleet-kit is installed (default `/opt/fleet-kit`). `add` creates the slot's
 user in its role's group, its clone, and sets the clone to push with the token from the unit's environment.
+An author slot also gets a commit identity in its clone: `agent01 (fleet)` at the `--git-email` address, which
+should be the noreply address of the account whose token pushes, so GitHub links the commits to that account
+and the name shows which slot wrote them. `add` refuses an author slot without one.
 Both run no shell, stop at the first failure, and keep a user or clone that already exists, so a slot made
 before `init` existed is brought up to date by running `add` again.
 

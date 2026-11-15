@@ -104,9 +104,10 @@ Result (2026-11-15), on the first machine (Ubuntu 26.04, four author slots and o
 Found by running it, and still open:
 
 - The allocator gave out issue 46 again five seconds after its PR merged, because GitHub's issue listing
-  still showed it open. It should skip an issue whose `issue/<n>` pull request has merged.
-- A slot has no git identity, so an agent's first commit fails and it invents one. `fleet_slot.py add` should
-  set `user.name` and `user.email`.
+  still showed it open. Fixed in 034d6d5: a pass skips an issue whose `issue/<n>` PR merged in the last 30
+  minutes.
+- A slot has no git identity, so an agent's first commit fails and it invents one. Fixed: `fleet_slot.py add`
+  sets `agentNN (fleet)` and the `--git-email` address in the clone; the existing slots need `add` run again.
 - Two author agents approved their own pull requests. Fixed in 7f2a6ff and cc-practices 0.8.1; not yet seen
   holding in a real run.
 - A slot's transcripts are readable only by the slot, so `fleet_report.py` needs root. A report unit, like the

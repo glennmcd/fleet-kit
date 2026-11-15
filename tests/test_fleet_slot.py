@@ -23,6 +23,7 @@ from fleet_slot import (
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "https://github.com/example/project.git"
+EMAIL = "1234+example@users.noreply.github.com"
 
 
 @pytest.mark.parametrize("name", ["agent01", "agent12", "agent99", "review01", "review12"])
@@ -464,7 +465,7 @@ def test_init_apply_does_not_reload_ssh_when_its_config_is_bad(tmp_path: Path) -
 
 
 def test_setup_creates_the_user_and_clones_as_that_user() -> None:
-    commands = setup_commands("agent07", REPO)
+    commands = setup_commands("agent07", REPO, EMAIL)
     assert ["useradd", "--create-home", "--shell", "/bin/bash", "agent07"] in commands
     clone = next(c for c in commands if "clone" in c)
     assert clone == [
@@ -484,13 +485,13 @@ def test_setup_creates_the_user_and_clones_as_that_user() -> None:
 
 
 def test_setup_puts_each_slot_in_its_roles_group() -> None:
-    assert ["usermod", "-aG", "fleet-agent", "agent01"] in setup_commands("agent01", REPO)
+    assert ["usermod", "-aG", "fleet-agent", "agent01"] in setup_commands("agent01", REPO, EMAIL)
     assert ["usermod", "-aG", "fleet-review", "review01"] in setup_commands("review01", REPO)
 
 
 def test_setup_leaves_the_machine_wide_directories_to_init() -> None:
     # Running add again must not take /var/lib/fleet back from fleet-admin.
-    for command in setup_commands("agent01", REPO):
+    for command in setup_commands("agent01", REPO, EMAIL):
         assert not any(p.startswith(("/var/lib/fleet", "/etc/fleet")) for p in command), command
 
 
@@ -505,7 +506,7 @@ def test_a_slots_home_is_closed_to_the_other_slots_and_readable_by_admins() -> N
 
 
 def test_setup_never_goes_through_a_shell() -> None:
-    for command in setup_commands("agent01", REPO):
+    for command in setup_commands("agent01", REPO, EMAIL):
         assert command[0] not in {"sh", "bash", "eval"}
         assert "-c" not in command[:2]
 
@@ -519,7 +520,12 @@ def test_setup_refuses_a_bad_slot_or_repo() -> None:
 
 def test_without_apply_it_prints_and_runs_nothing(capsys: pytest.CaptureFixture[str]) -> None:
     run = Recorder()
-    assert fleet_slot.main(["add", "agent01", "--repo", REPO], run=run, is_root=True) == 0
+    assert (
+        fleet_slot.main(
+            ["add", "agent01", "--repo", REPO, "--git-email", EMAIL], run=run, is_root=True
+        )
+        == 0
+    )
     assert run.ran == []
     out = capsys.readouterr().out
     assert "useradd --create-home --shell /bin/bash agent01" in out
@@ -527,7 +533,9 @@ def test_without_apply_it_prints_and_runs_nothing(capsys: pytest.CaptureFixture[
 
 def test_apply_needs_root(capsys: pytest.CaptureFixture[str]) -> None:
     run = Recorder()
-    code = fleet_slot.main(["add", "agent01", "--repo", REPO, "--apply"], run=run, is_root=False)
+    code = fleet_slot.main(
+        ["add", "agent01", "--repo", REPO, "--git-email", EMAIL, "--apply"], run=run, is_root=False
+    )
     assert code != 0
     assert run.ran == []
     assert "root" in capsys.readouterr().err
@@ -535,7 +543,9 @@ def test_apply_needs_root(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_apply_stops_at_the_first_failure() -> None:
     run = Recorder(fail_on="useradd")
-    code = fleet_slot.main(["add", "agent01", "--repo", REPO, "--apply"], run=run, is_root=True)
+    code = fleet_slot.main(
+        ["add", "agent01", "--repo", REPO, "--git-email", EMAIL, "--apply"], run=run, is_root=True
+    )
     assert code != 0
     assert run.ran[-1][0] == "useradd"
     assert not any("clone" in c for c in run.ran)
@@ -543,7 +553,9 @@ def test_apply_stops_at_the_first_failure() -> None:
 
 def test_a_missing_group_points_at_init(capsys: pytest.CaptureFixture[str]) -> None:
     run = Recorder(fail_on="usermod")
-    code = fleet_slot.main(["add", "agent01", "--repo", REPO, "--apply"], run=run, is_root=True)
+    code = fleet_slot.main(
+        ["add", "agent01", "--repo", REPO, "--git-email", EMAIL, "--apply"], run=run, is_root=True
+    )
     assert code != 0
     assert "fleet_slot.py init" in capsys.readouterr().err
 
@@ -552,7 +564,12 @@ def test_add_writes_no_units(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.chdir(tmp_path)
     run = Recorder()
     assert (
-        fleet_slot.main(["add", "agent01", "--repo", REPO, "--apply"], run=run, is_root=True) == 0
+        fleet_slot.main(
+            ["add", "agent01", "--repo", REPO, "--git-email", EMAIL, "--apply"],
+            run=run,
+            is_root=True,
+        )
+        == 0
     )
     assert list(tmp_path.iterdir()) == []
     assert ["systemctl", "daemon-reload"] not in run.ran
@@ -562,6 +579,53 @@ def test_a_review_slot_gets_its_own_user_and_clone() -> None:
     commands = setup_commands("review01", REPO)
     assert ["useradd", "--create-home", "--shell", "/bin/bash", "review01"] in commands
     assert clone_path("review01") == "/home/review01/repo"
+
+
+def test_an_author_slot_commits_as_itself_at_the_address_given() -> None:
+    commands = setup_commands("agent03", REPO, EMAIL)
+    git = ["runuser", "-u", "agent03", "--", "git", "-C", "/home/agent03/repo", "config"]
+    name = [*git, "user.name", "agent03 (fleet)"]
+    email = [*git, "user.email", EMAIL]
+    assert name in commands and email in commands
+    clone = next(c for c in commands if "clone" in c)
+    assert commands.index(clone) < commands.index(name)
+
+
+def test_an_author_slot_without_an_address_is_refused() -> None:
+    # Without one, an agent's first commit fails and it borrows whatever identity it can find.
+    with pytest.raises(ValueError, match="--git-email"):
+        setup_commands("agent01", REPO)
+
+
+def test_a_review_slot_needs_no_address_but_takes_one() -> None:
+    assert not any("user.email" in c for c in setup_commands("review01", REPO))
+    assert any(c[-2:] == ["user.email", EMAIL] for c in setup_commands("review01", REPO, EMAIL))
+
+
+@pytest.mark.parametrize(
+    "bad", ["", "--upload-pack=id", "no-at-sign", "a b@example.com", "a@example.com\nb", "@x.org"]
+)
+def test_setup_refuses_a_bad_address(bad: str) -> None:
+    with pytest.raises(ValueError, match="git-email"):
+        setup_commands("agent01", REPO, bad)
+
+
+def test_add_without_an_address_for_an_author_is_an_error_not_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run = Recorder()
+    assert (
+        fleet_slot.main(["add", "agent01", "--repo", REPO, "--apply"], run=run, is_root=True) != 0
+    )
+    assert run.ran == []
+    assert "--git-email" in capsys.readouterr().err
+
+
+def test_add_prints_the_identity_it_sets(capsys: pytest.CaptureFixture[str]) -> None:
+    fleet_slot.main(["add", "agent02", "--repo", REPO, "--git-email", EMAIL], run=Recorder())
+    out = capsys.readouterr().out
+    assert "config user.name 'agent02 (fleet)'" in out
+    assert f"config user.email {EMAIL}" in out
 
 
 def test_the_unit_command_prints_one_unit_by_name(capsys: pytest.CaptureFixture[str]) -> None:
