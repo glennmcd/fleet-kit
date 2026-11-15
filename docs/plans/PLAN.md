@@ -87,6 +87,31 @@ setup. See `docs/control-plane.md`.
 its own clone, the watchdog and stop switch have been exercised, and `fleet_report.py` has been compared with the
 round 1 baseline.
 
+Result (2026-11-15), on the first machine (Ubuntu 26.04, four author slots and one review slot):
+
+- **Ran**: six issues became six merged pull requests (#39, #43, #44, #49, #50, #51 of commitment-tracker-ai),
+  each reviewed by the review slot as `g26work`. Three author agents ran at the same time; the fourth slot
+  passes its check but has had no fourth issue to take.
+- **Exercised**: the stop switch (the allocator assigns nothing, a slot's check fails, the hook denies a tool
+  call, and clearing restores all three) and the watchdog (it caught a stopped allocator timer, and was clean
+  through a full cycle). Not exercised on the machine: a stalled agent, a red main, and the stop flag against
+  an agent in mid-run. Those three have unit tests only.
+- **Compared**: about 255,000 weighted tokens per merged PR, reviews included, against the baseline's 925,000.
+  Median context 26,500 against 92,500 to 171,000, and no call at 150k or more. Per changed line the fleet is
+  about 4,350 against 870, because five of the six PRs changed 2 to 24 lines; the one of ordinary size cost
+  1,083 per line. The record is `docs/metrics/` on commitment-tracker-ai's `docs/token-baseline` branch.
+
+Found by running it, and still open:
+
+- The allocator gave out issue 46 again five seconds after its PR merged, because GitHub's issue listing
+  still showed it open. It should skip an issue whose `issue/<n>` pull request has merged.
+- A slot has no git identity, so an agent's first commit fails and it invents one. `fleet_slot.py add` should
+  set `user.name` and `user.email`.
+- Two author agents approved their own pull requests. Fixed in 7f2a6ff and cc-practices 0.8.1; not yet seen
+  holding in a real run.
+- A slot's transcripts are readable only by the slot, so `fleet_report.py` needs root. A report unit, like the
+  check units, would let fleet-admin run it.
+
 ## Also open
 
 - Hook cost: measured on the fleet machine (2026-11-14), and no dispatcher for four author agents. See
