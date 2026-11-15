@@ -310,8 +310,9 @@ def _report_service(kit: str) -> str:
 # of fleetwright-admin, write the PR data first (the unit has no network), then start it and read its JSON:
 #   gh pr list --repo <owner>/<name> --state merged --limit 2000 \\
 #     --json number,headRefName,mergedAt,additions,deletions > {FLEETWRIGHT_DIR}/prs.json
+#   c=$(journalctl -u fleetwright-report -n 0 --show-cursor -q | sed -n 's/^-- cursor: //p')
 #   systemctl start fleetwright-report
-#   journalctl -o cat _SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value fleetwright-report)
+#   journalctl -u fleetwright-report -o cat --after-cursor "$c" | grep -E '^([{{}}]| )' > report.json
 [Unit]
 Description=Fleet token report over the slots' transcripts
 

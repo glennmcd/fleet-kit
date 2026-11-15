@@ -388,8 +388,9 @@ them all. `fleetwright-report.service` runs the report for fleetwright-admin ins
 ```bash
 gh pr list --repo glennmcd/commitment-tracker-ai --state merged --limit 2000 \
   --json number,headRefName,mergedAt,additions,deletions > /var/lib/fleetwright/prs.json
+c=$(journalctl -u fleetwright-report -n 0 --show-cursor -q | sed -n 's/^-- cursor: //p')
 systemctl start fleetwright-report
-journalctl -o cat _SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value fleetwright-report) > report.json
+journalctl -u fleetwright-report -o cat --after-cursor "$c" | grep -E '^([{}]| )' > report.json
 ```
 
 The unit reads every `agentNN` and `reviewNN` slot's `~/.claude/projects` and the PR data in
