@@ -8,24 +8,99 @@ Every step is safe to run again. Commands that start with `sudo` are the operato
 
 ## 1. System tools
 
-| Tool | Where | How | Why this way |
-|---|---|---|---|
-| `git`, `acl`, `polkitd` | apt | `sudo apt install git acl polkitd` | `setfacl` opens a slot's home to the admins; polkit holds the rule for the fleet's units |
-| `gh` 2.48 or later (2.104.0) | `/usr/bin/gh` | GitHub's apt repository, `cli.github.com/packages` | Ubuntu's own package is older and has no `gh api --slurp`, which the allocator needs |
-| `claude` (2.1.311) | `/usr/bin/claude` | Anthropic's apt repository, `downloads.claude.ai/claude-code/apt/stable` | one copy owned by root, so no slot can change the binary it runs |
-| `uv` (0.12.21) | `/usr/local/bin/uv` | the release binary, owned by root | every hook and script starts with `uv run --script` |
-| `rtk` (1.2.0) | `/usr/local/bin/rtk` | the release binary from `rtk-ai/rtk`, owned by root | compact command output for the agents |
-| `node` (22) | `/usr/bin/node` | apt | the consumer project's formatter and tests |
+Every tool a slot runs is installed once for the whole machine, in `/usr/bin` or `/usr/local/bin`, owned by
+root. Both folders are on each unit's `PATH`, so no slot needs its own copy. A slot cannot write either one,
+so it cannot change a tool that it or another slot runs.
 
-Check the owners. A tool on every slot's `PATH` that a login user owns lets that user run code as each slot:
+| Tool | Where | From | Why |
+|---|---|---|---|
+| `git`, `acl`, `polkitd`, `curl`, `unzip` | `/usr/bin` | Ubuntu | `setfacl` opens a slot's home to the admins; polkit holds the rule for the fleet's units |
+| `node` 22, `npm` | `/usr/bin` | Ubuntu | the consumer project's formatter and tests |
+| `gh` 2.48 or later (2.104.0) | `/usr/bin` | GitHub's apt repository | Ubuntu's own package is older and has no `gh api --slurp`, which the allocator needs |
+| `claude` (2.1.311) | `/usr/bin` | Anthropic's apt repository | one copy for every slot; an apt install does not update itself |
+| `uv`, `uvx` (0.12.21) | `/usr/local/bin` | release binary | every hook and script starts with `uv run --script` |
+| `bun`, `bunx` (1.4.4) | `/usr/local/bin` | release binary | the consumer project's package manager and test runner |
+| `rtk` (1.2.0) | `/usr/local/bin` | release binary | compact command output for the agents |
+
+The commands are for x86-64. Run them as a login user with sudo, never as a slot.
+
+**Ubuntu's packages:**
 
 ```bash
-ls -l /usr/local/bin/uv /usr/local/bin/rtk /usr/bin/gh /usr/bin/claude    # each root:root
-sudo chown root:root /usr/local/bin/rtk                                   # if it is not
+sudo apt update
+sudo apt install git acl polkitd curl unzip gnupg nodejs npm
 ```
 
-Tools the consumer project needs beyond these (for example `bun`) go in `/usr/local/bin` too, owned by root.
-Without one, an agent downloads its own copy into its home, which nobody reviewed.
+**`gh`**, from GitHub's repository:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install gh
+```
+
+**`claude`**, from Anthropic's repository. The key check must print one fingerprint,
+`31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`:
+
+```bash
+sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc
+gpg --show-keys /etc/apt/keyrings/claude-code.asc
+echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
+  | sudo tee /etc/apt/sources.list.d/claude-code.list
+sudo apt update && sudo apt install claude-code
+```
+
+**`uv`, `bun` and `rtk`** are release binaries. Each is downloaded to a scratch folder, checked against the
+release's checksum file, and copied into place by `install`, which sets the owner and mode in the same step:
+
+```bash
+cd "$(mktemp -d)"
+
+# uv and uvx
+curl -fsSLO https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c uv-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf uv-x86_64-unknown-linux-gnu.tar.gz
+sudo install -o root -g root -m 755 uv-x86_64-unknown-linux-gnu/uv uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/
+
+# bun; bunx is the same binary under a second name
+curl -fsSLO https://github.com/oven-sh/bun/releases/latest/download/bun-linux-x64.zip
+curl -fsSLO https://github.com/oven-sh/bun/releases/latest/download/SHASUMS256.txt
+sha256sum -c --ignore-missing SHASUMS256.txt
+unzip -q bun-linux-x64.zip
+sudo install -o root -g root -m 755 bun-linux-x64/bun /usr/local/bin/bun
+sudo ln -sf bun /usr/local/bin/bunx
+
+# rtk
+curl -fsSLO https://github.com/rtk-ai/rtk/releases/latest/download/rtk-x86_64-unknown-linux-musl.tar.gz
+curl -fsSLO https://github.com/rtk-ai/rtk/releases/latest/download/checksums.txt
+sha256sum -c --ignore-missing checksums.txt
+mkdir rtk && tar -xzf rtk-x86_64-unknown-linux-musl.tar.gz -C rtk
+sudo install -o root -g root -m 755 "$(find rtk -type f -name rtk)" /usr/local/bin/rtk
+```
+
+Each `sha256sum` line must end in `OK`. Stop if one does not.
+
+**Check the result.** Every line must show `root root` and a mode with no write bit for group or others
+(`-rwxr-xr-x`). A tool on the slots' `PATH` that a login user owns lets that user run code as each slot:
+
+```bash
+ls -lL /usr/bin/gh /usr/bin/claude /usr/bin/node /usr/local/bin/{uv,uvx,bun,bunx,rtk}
+ls -ld /usr/local/bin                                  # drwxr-xr-x root root
+sudo chown root:root /usr/local/bin/rtk                # the fix for a wrong owner
+sudo chmod 755 /usr/local/bin/rtk                      # and for a wrong mode
+```
+
+**Updating a tool** is the same commands again: `install` replaces the file in one step, so a running agent
+keeps the copy it started with. `sudo apt update && sudo apt upgrade gh claude-code` covers the two apt ones.
+
+A slot never installs a tool for itself. When a project needs one that is missing, an agent may download its
+own copy into its home, which nobody reviewed: the first machine had no `bun`, and `agent01` fetched one into
+`~/.local`. Add the tool here instead, and look for strays with `sudo ls /home/agent*/.local /home/agent*/.bun`.
 
 ## 2. The kit and the practices
 
