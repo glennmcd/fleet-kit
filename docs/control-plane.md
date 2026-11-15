@@ -29,9 +29,9 @@ The system temp directory is always writable.
 ## Stop the line
 
 ```bash
-uv run scripts/fleet_stop.py stop "the deploy script is looping"
-uv run scripts/fleet_stop.py status      # exit 1 while stopped
-uv run scripts/fleet_stop.py clear
+uv run --script scripts/fleet_stop.py stop "the deploy script is looping"
+uv run --script scripts/fleet_stop.py status      # exit 1 while stopped
+uv run --script scripts/fleet_stop.py clear
 ```
 
 `stop` writes the flag file. [`hooks/stop_line.py`](../hooks/stop_line.py) refuses every tool call of every
@@ -76,11 +76,11 @@ and post verdicts as the reviewer's own GitHub account. [`scripts/fleet_slot.py`
 up the machine once, then each slot:
 
 ```bash
-uv run scripts/fleet_slot.py init --admin "$USER"                    # prints what it would do
-sudo uv run scripts/fleet_slot.py init --admin "$USER" --apply      # the machine, once
-sudo uv run scripts/fleet_slot.py add agent01 --repo https://github.com/owner/name.git \
+uv run --script scripts/fleet_slot.py init --admin "$USER"                    # prints what it would do
+sudo uv run --script scripts/fleet_slot.py init --admin "$USER" --apply      # the machine, once
+sudo uv run --script scripts/fleet_slot.py add agent01 --repo https://github.com/owner/name.git \
     --git-email 123+you@users.noreply.github.com --apply
-sudo uv run scripts/fleet_slot.py add review01 --repo https://github.com/owner/name.git --apply
+sudo uv run --script scripts/fleet_slot.py add review01 --repo https://github.com/owner/name.git --apply
 ```
 
 Without `--apply` they only print. `init` creates the groups and users of [Who needs root](#who-needs-root),

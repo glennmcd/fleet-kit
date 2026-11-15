@@ -10,7 +10,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+# Copied from agent-fleet-kit as it is; it is run from a checkout, not on the fleet machine.
+VENDORED_SCRIPTS = {"session_tokens.py"}
+
+
 class Plugin(unittest.TestCase):
+    def test_every_script_runs_without_the_projects_environment(self) -> None:
+        # Without the inline header, `uv run --script` falls back to the project and tries to create
+        # /opt/fleet-kit/.venv, which only root can write.
+        missing = [
+            path.name
+            for path in sorted((ROOT / "scripts").glob("*.py"))
+            if path.name not in VENDORED_SCRIPTS
+            and "# /// script" not in path.read_text(encoding="utf-8").splitlines()[:5]
+        ]
+        self.assertEqual(missing, [])
+
     def test_manifests_parse_and_agree_on_name(self) -> None:
         plugin = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
         market = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))

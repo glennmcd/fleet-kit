@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# ///
 """Stop the line: halt every agent on this machine with one command.
 
     fleet_stop.py stop "why"     create the flag file; every agent's next tool call is refused
