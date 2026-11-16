@@ -8,7 +8,7 @@
 
 Panels: each author (``fleetwright-agent@agentNN``), each reviewer (``fleetwright-review@reviewNN``), the
 allocator and the watchdog. An agent's or reviewer's panel also shows its assignment from
-``/var/lib/fleetwright/slots/<slot>``. A failed unit is marked FAILED. Each header ends with the time
+``/var/lib/fleetwright/slots/<slot>``. A failed unit is marked FAILED, and a commands section under the panels lists what an operator runs. Each header ends with the time
 of the unit's latest line, and says whether the unit starts on its own (see ``Dashboard.refresh``).
 
 It only reads: the journal (as a member of ``systemd-journal``), ``systemctl is-active`` and the slots
@@ -111,6 +111,7 @@ class Panel:
 class Dashboard:
     def __init__(self, units: Iterable[str]) -> None:
         self.panels: dict[str, Panel] = {u: Panel(u) for u in units}
+        self.stopped = False  # the stop flag, as the last refresh saw it
 
     def _panel(self, unit: str) -> Panel:
         if unit not in self.panels:
@@ -155,7 +156,7 @@ class Dashboard:
             return systemctl(["is-active", unit])[1].strip() == "active"
 
         stop = stop_file if stop_file is not None else slots_dir.parent / "STOP"
-        stopped = stop.exists()
+        stopped = self.stopped = stop.exists()
         timers = {u: active(u.removesuffix(".service") + ".timer") for u in (ALLOCATE, WATCHDOG)}
         for panel in self.panels.values():
             panel.state = systemctl(["is-active", panel.unit])[1].strip() or "unknown"
@@ -197,8 +198,41 @@ def _panel_rows(panel: Panel, width: int) -> list[str]:
     return rows
 
 
+STOP_SCRIPT = "python3 /opt/fleetwright/scripts/fleetwright_stop.py"
+
+# What an operator runs, as a member of fleetwright-admin and without root. Shown as text; the dashboard
+# itself never runs any of them.
+COMMANDS = [
+    f'{STOP_SCRIPT} stop "why"' + "   stop the fleet (`clear` lifts it)",
+    "systemctl stop fleetwright-allocate.timer   pause new work (`start` resumes)",
+    "systemctl start fleetwright-allocate-dry-run; journalctl -u fleetwright-allocate-dry-run -o cat -n 20",
+    "systemctl start fleetwright-check-agent@agentNN   check a slot (fleetwright-check-review@reviewNN)",
+    "systemctl stop fleetwright-agent@agentNN   stop one agent; its next run keeps or stashes its work",
+    "journalctl -u fleetwright-agent@agentNN -o cat -n 50   an agent's full log",
+    "systemctl start fleetwright-report   the token report; docs/control-plane.md has how to read it",
+]
+
+
+def commands(dash: Dashboard) -> list[str]:
+    """The commands section: what the fleet's state calls for first, then the usual ones."""
+    first: list[str] = []
+    if dash.stopped:
+        first.append(f"the fleet is stopped: {STOP_SCRIPT} status, then {STOP_SCRIPT} clear")
+    for panel in dash.panels.values():
+        if panel.state == "failed":
+            first += [
+                f"{panel.title} failed and holds its work:",
+                f"  journalctl -u {panel.unit.removesuffix('.service')} -o cat -n 50",
+                f"  systemctl reset-failed {panel.unit.removesuffix('.service')}",
+            ]
+    return first + COMMANDS
+
+
 def render(dash: Dashboard, width: int, height: int) -> list[str]:
-    """The screen as text rows, no wider than ``width`` and no taller than ``height``."""
+    """The screen as text rows, no wider than ``width`` and no taller than ``height``.
+
+    The panels come first; the commands section follows in whatever room is left.
+    """
     columns = max(1, min(len(dash.panels), width // PANEL_WIDTH)) if dash.panels else 1
     col_width = max(1, (width - (columns - 1)) // columns)
     blocks = [_panel_rows(p, col_width) for p in dash.panels.values()]
@@ -207,6 +241,9 @@ def render(dash: Dashboard, width: int, height: int) -> list[str]:
         group = blocks[start : start + columns]
         for i in range(LINES + 1):
             screen.append(" ".join(b[i].ljust(col_width) for b in group).rstrip()[:width])
+    if len(screen) + 2 <= height:
+        screen.append("── commands ".ljust(width, "─")[:width])
+        screen += [f"  {line}"[:width] for line in commands(dash)]
     return screen[:height]
 
 

@@ -392,6 +392,11 @@ pass of a few seconds and exit, so between passes they are `inactive`, and `time
 coming (`timer off`: none will). A slot is started by the allocator: `auto`, or why not: `fleet stopped`,
 `allocator off`, or `held: reset-failed` for a failed unit that holds its work until a person resets it.
 
+Under the panels, when the terminal has room, a commands section lists what an operator runs without root:
+stopping and clearing the fleet, pausing the allocator, a dry run, checking or stopping a slot, an agent's full
+log and the token report. What the fleet's state calls for comes first: the `clear` command while the fleet is
+stopped, and each failed unit's `journalctl` and `reset-failed`. They are shown as text; the dashboard runs none.
+
 ```bash
 uv run --script /opt/fleetwright/scripts/fleetwright_dash.py      # as a member of fleetwright-admin
 ```

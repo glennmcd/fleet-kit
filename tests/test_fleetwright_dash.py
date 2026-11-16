@@ -290,3 +290,49 @@ def test_a_routine_line_moves_the_time_but_adds_no_text() -> None:
     dash.feed(json.dumps(entry))
     assert dash.panels[ALLOCATE].updated == WHEN
     assert list(dash.panels[ALLOCATE].lines) == []
+
+
+# --- the commands section -----------------------------------------------------------------------
+
+
+def test_the_commands_section_lists_what_an_operator_runs() -> None:
+    text = "\n".join(fleetwright_dash.commands(Dashboard([AGENT, WATCHDOG])))
+    for command in (
+        "fleetwright_stop.py stop",
+        "systemctl stop fleetwright-allocate.timer",
+        "systemctl start fleetwright-allocate-dry-run",
+        "systemctl start fleetwright-check-agent@agentNN",
+        "systemctl stop fleetwright-agent@agentNN",
+        "journalctl -u fleetwright-agent@agentNN",
+        "systemctl start fleetwright-report",
+    ):
+        assert command in text, command
+
+
+def test_a_failed_unit_gets_its_own_commands_first(tmp_path: Path) -> None:
+    dash = refreshed(tmp_path, {"fleetwright-allocate.timer": "active", AGENT: "failed"})
+    lines = fleetwright_dash.commands(dash)
+    assert "agent01" in lines[0] and "failed" in lines[0]
+    assert "systemctl reset-failed fleetwright-agent@agent01" in "\n".join(lines[:3])
+    assert "journalctl -u fleetwright-agent@agent01" in "\n".join(lines[:3])
+
+
+def test_a_stopped_fleet_puts_the_clear_command_first(tmp_path: Path) -> None:
+    dash = refreshed(tmp_path, {"fleetwright-allocate.timer": "active"}, stopped=True)
+    assert "fleetwright_stop.py clear" in fleetwright_dash.commands(dash)[0]
+
+
+def test_the_commands_follow_the_panels_when_there_is_room() -> None:
+    dash = Dashboard([AGENT, WATCHDOG])
+    screen = render(dash, 100, 60)
+    heads = [i for i, row in enumerate(screen) if row.startswith("──")]
+    assert "commands" in screen[heads[-1]]
+    assert heads[-1] > heads[0]
+    assert any("fleetwright_stop.py stop" in row for row in screen)
+
+
+def test_the_panels_keep_priority_on_a_short_terminal() -> None:
+    dash = Dashboard([AGENT, WATCHDOG])
+    screen = render(dash, 100, 12)
+    assert len(screen) == 12
+    assert sum(row.startswith("── agent01") or row.startswith("── watchdog") for row in screen) == 2
