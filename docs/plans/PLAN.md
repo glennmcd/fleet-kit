@@ -101,8 +101,10 @@ Result (2026-11-15), on the first machine (Ubuntu 26.04, four author slots and o
   allocator assigned nothing; after clearing it gave the unfinished issues out again. A red main (2026-11-15):
   commitment-tracker-ai's manual `fleet-drill` workflow failed a check on main's head, and the watchdog's next
   pass, three minutes later, set the stop flag; the allocator assigned nothing and a slot's check failed until
-  the flag was cleared. Not exercised on the machine: a stalled agent (the first attempt sent no `SIGSTOP`),
-  which has unit tests only.
+  the flag was cleared. A stalled agent (2026-11-15): agent01 was paused with `SIGSTOP` at 19:02:28 while it
+  worked on issue 62; the watchdog's passes at 19:02, 19:08 and 19:13 were clean, and the first pass after 15
+  quiet minutes, at 19:18:06, reported `caught stalled: fleetwright-agent@agent01 (issue 62) has logged nothing
+  for 15 min`. Every item of *Done when* has now been exercised on the machine.
 - **Compared**: about 255,000 weighted tokens per merged PR, reviews included, against the baseline's 925,000.
   Median context 26,500 against 92,500 to 171,000, and no call at 150k or more. Per changed line the fleet is
   about 4,350 against 870, because five of the six PRs changed 2 to 24 lines; the one of ordinary size cost
