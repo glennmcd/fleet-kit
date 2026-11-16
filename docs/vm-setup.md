@@ -176,14 +176,26 @@ The first three need only `fleetwright-admin`. Each check must end with `every c
 
 ## Updating
 
-The scripts and units run from `/opt/fleetwright`. The hooks do not: `claude plugin install` copied the plugin
-into each slot's `~/.claude/plugins/cache`, and a slot keeps running that copy until it is updated.
+The scripts and units run from `/opt/fleetwright`. The plugins do not: `claude plugin install` copied each
+plugin into the slot's `~/.claude/plugins/cache`, and a slot keeps running that copy until it is updated.
+
+Update fleetwright and cc-practices together. They share contracts: the reviewer posts its verdict with
+cc-practices' `review-pr` skill, and fleetwright's verdict check and allocator read it, so a slot still on an
+older cc-practices can post a verdict marker the newer kit does not read. After the rename to fleetwright,
+that left `reviewer-verdict` red on four approved pull requests until every slot had cc-practices 0.9.0.
 
 ```bash
 sudo git -C /opt/fleetwright pull --ff-only
+sudo git -C /opt/cc-practices-plugin pull --ff-only
 sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py init --admin <you> --apply       # when units or the polkit rule changed
-sudo -u agent01 -H claude plugin update fleetwright@fleetwright                # per slot, when hooks or skills changed
+for s in agent01 agent02 agent03 agent04 review01; do                                       # every slot, both plugins
+  sudo -u $s -H claude plugin update fleetwright@fleetwright
+  sudo -u $s -H claude plugin update cc-practices@cc-practices
+done
 ```
+
+Then check each slot: `systemctl start fleetwright-check-agent@agent01` (and the others), and read the
+`plugins:` line in its journal.
 
 `init` rewrites the unit files, the polkit rule and the sshd file, then reloads systemd; existing users and
 directories are kept. Enable any new timer afterwards (step 6).
