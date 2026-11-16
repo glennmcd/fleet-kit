@@ -372,3 +372,10 @@ def test_an_author_is_told_the_verdict_check_is_not_its_to_pass() -> None:
         assert "Do not post review verdicts" in text
         assert "review-pr" in text
     assert "checks pass and it is ready for review" not in fleetwright_agent.issue_prompt(7)
+
+
+def test_an_author_reads_the_issue_comments_where_a_handoff_waits() -> None:
+    # A run that hands off before opening a pull request posts its handoff on the issue, and
+    # `gh issue view` without --comments does not show it to the next run.
+    assert "`gh issue view 7 --comments`" in fleetwright_agent.issue_prompt(7)
+    assert "handoff" in fleetwright_agent.issue_prompt(7).lower()

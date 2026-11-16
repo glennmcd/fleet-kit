@@ -69,7 +69,8 @@ RESUME_NOTE = (
 
 def issue_prompt(issue: int, resumed: bool = False) -> str:
     return (
-        f"Work on GitHub issue #{issue} of this repository. Read it with `gh issue view {issue}`. "
+        f"Work on GitHub issue #{issue} of this repository. Read it with `gh issue view {issue} --comments`; "
+        "if an earlier run on it posted a handoff comment, carry on from the latest one. "
         "Its Done when list is your approval and your definition of finished. "
         f"You are on the branch issue/{issue}; commit there, push it, and open a pull request that "
         "closes the issue, or continue the one that is open. "
