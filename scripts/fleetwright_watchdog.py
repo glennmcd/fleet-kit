@@ -184,7 +184,16 @@ def check_main(repo: str, gh: Gh, stop_file: Path) -> list[Finding]:
     """A failed check on the default branch's head stops the line."""
     data = json.loads(gh(["api", f"repos/{repo}/commits/HEAD/check-runs?per_page=100"]))
     runs = data["check_runs"]
-    red = sorted({str(r.get("name") or "?") for r in runs if r.get("conclusion") in RED})
+    # A check run again in a new check suite (a manual run, a workflow started again) is listed beside its
+    # earlier runs; only the newest run of each check says whether it is red now.
+    newest: dict[str, dict[str, Any]] = {}
+    for r in runs:
+        name = str(r.get("name") or "?")
+        key = (str(r.get("started_at") or ""), int(r.get("id") or 0))
+        held = newest.get(name)
+        if held is None or key > (str(held.get("started_at") or ""), int(held.get("id") or 0)):
+            newest[name] = r
+    red = sorted(name for name, r in newest.items() if r.get("conclusion") in RED)
     if not red:
         return []
     sha = next((str(r.get("head_sha") or "") for r in runs), "")[:7]

@@ -267,6 +267,29 @@ def test_a_line_already_stopped_keeps_its_note(
     assert note is not None and note.startswith("the operator's reason")
 
 
+def recorded_runs() -> list[dict[str, Any]]:
+    path = Path(__file__).parent / "fixtures" / "watchdog" / "check_runs_rerun.json"
+    runs: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))["check_runs"]
+    return runs
+
+
+def test_a_check_that_failed_and_then_passed_is_not_red(fleet: Path) -> None:
+    # The drill check failed, then a newer run passed in its own check suite; GitHub lists both.
+    assert run(fleet, gh=FakeGitHub(main=recorded_runs())) == 0
+    assert fleetwright_stop.status(fleet / "STOP") is None
+
+
+def test_a_check_that_passed_and_then_failed_is_red(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = recorded_runs()
+    for r in runs:
+        if r["name"] == "drill":
+            r["conclusion"] = "failure" if r["conclusion"] == "success" else "success"
+    assert run(fleet, gh=FakeGitHub(main=runs)) == 0
+    assert lines(capsys)[0].startswith("caught red-main: main is red at 2d08681 (drill)")
+
+
 @pytest.mark.parametrize("conclusion", ["success", "neutral", "skipped", "cancelled", None])
 def test_a_main_that_is_not_red_does_not_stop_the_line(fleet: Path, conclusion: str | None) -> None:
     assert run(fleet, gh=FakeGitHub(main=[check("backend", conclusion)])) == 0

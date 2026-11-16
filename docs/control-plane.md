@@ -366,7 +366,8 @@ systemctl stop fleetwright-watchdog.timer                           # fleetwrigh
 The stop flag is the only thing it writes. It starts and stops no unit and writes nothing to GitHub. A red
 main stops the line once: a line that is already stopped keeps its note, and a person clears the flag
 (`fleetwright_stop.py clear`) after main is green. If the flag is cleared while main is still red, the next run
-sets it again. A cancelled check is not red.
+sets it again. A cancelled check is not red, and a check that ran again counts by its newest run: a failure followed
+by a passing run of the same check is green.
 
 The stall check reads the journal, which the allocator's user cannot. The unit adds the `systemd-journal`
 group for this run only (`SupplementaryGroups=`). The limits are optional keys in `/etc/fleetwright/fleetwright.json`:
