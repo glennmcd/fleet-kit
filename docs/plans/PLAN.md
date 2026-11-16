@@ -78,7 +78,8 @@ on commitment-tracker-ai's main. The reviewer has its own account, `g26work`, wh
 - Token report without root: `fleetwright-report.service` runs `fleetwright_report.py` over every slot's
   transcripts for fleetwright-admin. Built in v0.5.0; reading its output fixed in v0.6.0.
 - Dashboard: one terminal with a panel per author, reviewer, the allocator and the watchdog, each showing the
-  unit's state, whether it starts on its own, its assignment, the time of its latest line and its last 5 lines.
+  unit's state, whether it starts on its own, its assignment, the time of its latest line and its last 5 lines,
+  and four keystroke commands: stop and restart the fleet, pause and resume new work.
   Built in v0.6.0: `scripts/fleetwright_dash.py` (issue #3).
 
 Decided (2026-11-13): a Linux machine reached over SSH first (one already runs), then a cloud VM; an OS user per

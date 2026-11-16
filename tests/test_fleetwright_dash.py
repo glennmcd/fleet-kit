@@ -295,31 +295,99 @@ def test_a_routine_line_moves_the_time_but_adds_no_text() -> None:
 # --- the commands section -----------------------------------------------------------------------
 
 
-def test_the_commands_section_lists_what_an_operator_runs() -> None:
-    text = "\n".join(fleetwright_dash.commands(Dashboard([AGENT, WATCHDOG])))
-    for command in (
-        "fleetwright_stop.py stop",
-        "systemctl stop fleetwright-allocate.timer",
-        "systemctl start fleetwright-allocate-dry-run",
-        "systemctl start fleetwright-check-agent@agentNN",
-        "systemctl stop fleetwright-agent@agentNN",
-        "journalctl -u fleetwright-agent@agentNN",
-        "systemctl start fleetwright-report",
-    ):
-        assert command in text, command
+STOP = "python3 /opt/fleetwright/scripts/fleetwright_stop.py"
 
 
-def test_a_failed_unit_gets_its_own_commands_first(tmp_path: Path) -> None:
+def test_the_commands_section_shows_the_four_keystroke_commands() -> None:
+    assert fleetwright_dash.commands(Dashboard([AGENT, WATCHDOG])) == [
+        f'ss: {STOP} stop "from dashboard"   --| stop the fleet',
+        f"cc: {STOP} clear   --| restart the fleet",
+        "pp: systemctl stop fleetwright-allocate.timer   --| pause new work",
+        "rr: systemctl start fleetwright-allocate.timer   --| resume new work",
+    ]
+
+
+def test_each_keystroke_runs_exactly_its_command() -> None:
+    argv = {key: list(action.argv) for key, action in fleetwright_dash.ACTIONS.items()}
+    assert argv == {
+        "ss": ["python3", "/opt/fleetwright/scripts/fleetwright_stop.py", "stop", "from dashboard"],
+        "cc": ["python3", "/opt/fleetwright/scripts/fleetwright_stop.py", "clear"],
+        "pp": ["systemctl", "stop", "fleetwright-allocate.timer"],
+        "rr": ["systemctl", "start", "fleetwright-allocate.timer"],
+    }
+
+
+def test_a_failed_unit_gets_its_own_lines_above_the_commands(tmp_path: Path) -> None:
     dash = refreshed(tmp_path, {"fleetwright-allocate.timer": "active", AGENT: "failed"})
     lines = fleetwright_dash.commands(dash)
     assert "agent01" in lines[0] and "failed" in lines[0]
     assert "systemctl reset-failed fleetwright-agent@agent01" in "\n".join(lines[:3])
     assert "journalctl -u fleetwright-agent@agent01" in "\n".join(lines[:3])
+    assert lines[3].startswith("ss: ")
 
 
-def test_a_stopped_fleet_puts_the_clear_command_first(tmp_path: Path) -> None:
-    dash = refreshed(tmp_path, {"fleetwright-allocate.timer": "active"}, stopped=True)
-    assert "fleetwright_stop.py clear" in fleetwright_dash.commands(dash)[0]
+@pytest.mark.parametrize("key", ["ss", "cc", "pp", "rr"])
+def test_the_same_key_twice_within_a_second_picks_its_command(key: str) -> None:
+    keys = fleetwright_dash.Keys()
+    assert keys.press(key[0], 10.0) is None
+    assert keys.press(key[1], 10.5) == key
+
+
+def test_one_press_does_nothing() -> None:
+    keys = fleetwright_dash.Keys()
+    assert keys.press("s", 10.0) is None
+
+
+def test_a_second_press_after_the_window_starts_over() -> None:
+    keys = fleetwright_dash.Keys()
+    keys.press("s", 10.0)
+    assert keys.press("s", 11.5) is None
+    assert keys.press("s", 11.8) == "ss"
+
+
+def test_another_key_between_the_presses_starts_over() -> None:
+    keys = fleetwright_dash.Keys()
+    keys.press("s", 10.0)
+    assert keys.press("c", 10.2) is None
+    assert keys.press("s", 10.4) is None
+
+
+def test_a_command_is_not_run_twice_by_a_third_press() -> None:
+    keys = fleetwright_dash.Keys()
+    keys.press("p", 10.0)
+    assert keys.press("p", 10.1) == "pp"
+    assert keys.press("p", 10.2) is None
+
+
+@pytest.mark.parametrize("key", ["x", "q", "S"])
+def test_keys_with_no_command_never_pick_one(key: str) -> None:
+    keys = fleetwright_dash.Keys()
+    keys.press(key, 10.0)
+    assert keys.press(key, 10.1) is None
+
+
+def test_running_a_command_reports_its_exit_and_first_line() -> None:
+    ran: list[list[str]] = []
+
+    def run(argv: Sequence[str]) -> tuple[int, str]:
+        ran.append(list(argv))
+        return 0, "stopped: /var/lib/fleetwright/STOP\nmore\n"
+
+    note = fleetwright_dash.run_action("ss", run)
+    assert ran == [list(fleetwright_dash.ACTIONS["ss"].argv)]
+    assert note == "ss stop the fleet: ok: stopped: /var/lib/fleetwright/STOP"
+
+
+def test_a_failed_command_says_so() -> None:
+    note = fleetwright_dash.run_action("pp", lambda argv: (1, "Access denied"))
+    assert note == "pp pause new work: failed (exit 1): Access denied"
+
+
+def test_the_last_result_shows_in_the_commands_header() -> None:
+    dash = Dashboard([AGENT])
+    dash.note = "pp pause new work: ok"
+    header = next(row for row in render(dash, 100, 60) if "commands" in row)
+    assert "pp pause new work: ok" in header
 
 
 def test_the_commands_follow_the_panels_when_there_is_room() -> None:

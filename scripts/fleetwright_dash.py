@@ -6,13 +6,20 @@
 
     uv run --script /opt/fleetwright/scripts/fleetwright_dash.py      q quits
 
+Four keystrokes run a command; press the letter twice within a second:
+
+    ss  stop the fleet       fleetwright_stop.py stop "from dashboard"
+    cc  restart the fleet    fleetwright_stop.py clear
+    pp  pause new work       systemctl stop fleetwright-allocate.timer
+    rr  resume new work      systemctl start fleetwright-allocate.timer
+
 Panels: each author (``fleetwright-agent@agentNN``), each reviewer (``fleetwright-review@reviewNN``), the
 allocator and the watchdog. An agent's or reviewer's panel also shows its assignment from
-``/var/lib/fleetwright/slots/<slot>``. A failed unit is marked FAILED, and a commands section under the panels lists what an operator runs. Each header ends with the time
+``/var/lib/fleetwright/slots/<slot>``. A failed unit is marked FAILED, and a commands section under the panels lists the four commands. Each header ends with the time
 of the unit's latest line, and says whether the unit starts on its own (see ``Dashboard.refresh``).
 
-It only reads: the journal (as a member of ``systemd-journal``), ``systemctl is-active`` and the slots
-directory. It never reads ``/etc/fleetwright``, so it finds the slots from the journal rather than the
+Apart from those four commands it only reads: the journal (as a member of ``systemd-journal``),
+``systemctl is-active`` and the slots directory. It never reads ``/etc/fleetwright``, so it finds the slots from the journal rather than the
 config, and a slot that has never logged has no panel until it does. Standard library only.
 """
 
@@ -112,6 +119,7 @@ class Dashboard:
     def __init__(self, units: Iterable[str]) -> None:
         self.panels: dict[str, Panel] = {u: Panel(u) for u in units}
         self.stopped = False  # the stop flag, as the last refresh saw it
+        self.note = ""  # the last keystroke command's result, shown in the commands header
 
     def _panel(self, unit: str) -> Panel:
         if unit not in self.panels:
@@ -198,26 +206,60 @@ def _panel_rows(panel: Panel, width: int) -> list[str]:
     return rows
 
 
-STOP_SCRIPT = "python3 /opt/fleetwright/scripts/fleetwright_stop.py"
+STOP_SCRIPT = "/opt/fleetwright/scripts/fleetwright_stop.py"
 
-# What an operator runs, as a member of fleetwright-admin and without root. Shown as text; the dashboard
-# itself never runs any of them.
-COMMANDS = [
-    f'{STOP_SCRIPT} stop "why"' + "   stop the fleet (`clear` lifts it)",
-    "systemctl stop fleetwright-allocate.timer   pause new work (`start` resumes)",
-    "systemctl start fleetwright-allocate-dry-run; journalctl -u fleetwright-allocate-dry-run -o cat -n 20",
-    "systemctl start fleetwright-check-agent@agentNN   check a slot (fleetwright-check-review@reviewNN)",
-    "systemctl stop fleetwright-agent@agentNN   stop one agent; its next run keeps or stashes its work",
-    "journalctl -u fleetwright-agent@agentNN -o cat -n 50   an agent's full log",
-    "systemctl start fleetwright-report   the token report; docs/control-plane.md has how to read it",
-]
+
+@dataclass(frozen=True)
+class Action:
+    argv: tuple[str, ...]
+    label: str
+
+    @property
+    def text(self) -> str:
+        return " ".join(f'"{a}"' if " " in a else a for a in self.argv)
+
+
+# The only commands the dashboard runs, each on its letter pressed twice. Fixed here: nothing typed reaches
+# them. They run as the dashboard's user, which fleetwright-admin and the polkit rule allow, without a shell.
+ACTIONS: dict[str, Action] = {
+    "ss": Action(("python3", STOP_SCRIPT, "stop", "from dashboard"), "stop the fleet"),
+    "cc": Action(("python3", STOP_SCRIPT, "clear"), "restart the fleet"),
+    "pp": Action(("systemctl", "stop", "fleetwright-allocate.timer"), "pause new work"),
+    "rr": Action(("systemctl", "start", "fleetwright-allocate.timer"), "resume new work"),
+}
+DOUBLE_PRESS_SECONDS = 1.0
+
+
+class Keys:
+    """Turns keystrokes into a command: the same letter twice within a second. Anything else starts over."""
+
+    def __init__(self) -> None:
+        self.pending = ""
+        self.at = 0.0
+
+    def press(self, key: str, now: float) -> str | None:
+        if key * 2 not in ACTIONS:
+            self.pending = ""
+            return None
+        if self.pending == key and now - self.at <= DOUBLE_PRESS_SECONDS:
+            self.pending = ""
+            return key * 2
+        self.pending, self.at = key, now
+        return None
+
+
+def run_action(key: str, run: Callable[[Sequence[str]], tuple[int, str]]) -> str:
+    """Runs one command and returns a line saying how it went."""
+    action = ACTIONS[key]
+    code, out = run(action.argv)
+    first = next((line.strip() for line in out.splitlines() if line.strip()), "")
+    result = "ok" if code == 0 else f"failed (exit {code})"
+    return f"{key} {action.label}: {result}" + (f": {first}" if first else "")
 
 
 def commands(dash: Dashboard) -> list[str]:
-    """The commands section: what the fleet's state calls for first, then the usual ones."""
+    """The commands section: each failed unit's own commands first, as text, then the four keystrokes."""
     first: list[str] = []
-    if dash.stopped:
-        first.append(f"the fleet is stopped: {STOP_SCRIPT} status, then {STOP_SCRIPT} clear")
     for panel in dash.panels.values():
         if panel.state == "failed":
             first += [
@@ -225,7 +267,7 @@ def commands(dash: Dashboard) -> list[str]:
                 f"  journalctl -u {panel.unit.removesuffix('.service')} -o cat -n 50",
                 f"  systemctl reset-failed {panel.unit.removesuffix('.service')}",
             ]
-    return first + COMMANDS
+    return first + [f"{key}: {a.text}   --| {a.label}" for key, a in ACTIONS.items()]
 
 
 def render(dash: Dashboard, width: int, height: int) -> list[str]:
@@ -242,7 +284,8 @@ def render(dash: Dashboard, width: int, height: int) -> list[str]:
         for i in range(LINES + 1):
             screen.append(" ".join(b[i].ljust(col_width) for b in group).rstrip()[:width])
     if len(screen) + 2 <= height:
-        screen.append("── commands ".ljust(width, "─")[:width])
+        title = "── commands  (press the letter twice) " + (f"── {dash.note} " if dash.note else "")
+        screen.append(title.ljust(width, "─")[:width])
         screen += [f"  {line}"[:width] for line in commands(dash)]
     return screen[:height]
 
@@ -261,6 +304,22 @@ def follow_command() -> list[str]:
 def _run(argv: Sequence[str]) -> tuple[int, str]:
     done = subprocess.run(list(argv), capture_output=True, text=True, check=False, timeout=30)
     return done.returncode, done.stdout
+
+
+def _run_action(argv: Sequence[str]) -> tuple[int, str]:
+    """A keystroke command, with what it printed on either stream."""
+    try:
+        done = subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, str(exc)
+    return done.returncode, (done.stdout or "") + (done.stderr or "")
 
 
 def _fields(name: str) -> list[str]:
@@ -307,6 +366,7 @@ def _loop(screen: Any) -> int:
     selector = selectors.DefaultSelector()
     selector.register(follow.stdout, selectors.EVENT_READ)
     last = 0.0
+    keys = Keys()
     try:
         while True:
             if time.monotonic() - last >= REFRESH_SECONDS:
@@ -319,6 +379,11 @@ def _loop(screen: Any) -> int:
             key = screen.getch()
             if key in (ord("q"), ord("Q")):
                 return 0
+            if 0 <= key < 256:
+                chosen = keys.press(chr(key), time.monotonic())
+                if chosen:
+                    dash.note = run_action(chosen, _run_action)
+                    last = 0.0  # show the command's effect at once
     finally:
         follow.terminate()
 

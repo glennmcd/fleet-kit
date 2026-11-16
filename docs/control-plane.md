@@ -392,16 +392,25 @@ pass of a few seconds and exit, so between passes they are `inactive`, and `time
 coming (`timer off`: none will). A slot is started by the allocator: `auto`, or why not: `fleet stopped`,
 `allocator off`, or `held: reset-failed` for a failed unit that holds its work until a person resets it.
 
-Under the panels, when the terminal has room, a commands section lists what an operator runs without root:
-stopping and clearing the fleet, pausing the allocator, a dry run, checking or stopping a slot, an agent's full
-log and the token report. What the fleet's state calls for comes first: the `clear` command while the fleet is
-stopped, and each failed unit's `journalctl` and `reset-failed`. They are shown as text; the dashboard runs none.
+Under the panels, when the terminal has room, a commands section lists four commands, each run by pressing its
+letter twice within a second:
+
+| Keys | Command | Does |
+|---|---|---|
+| `ss` | `fleetwright_stop.py stop "from dashboard"` | stops the fleet |
+| `cc` | `fleetwright_stop.py clear` | restarts the fleet |
+| `pp` | `systemctl stop fleetwright-allocate.timer` | pauses new work |
+| `rr` | `systemctl start fleetwright-allocate.timer` | resumes new work |
+
+They are fixed in the script, run as the dashboard's user without a shell, and need no root: fleetwright-admin
+can write the stop flag, and the polkit rule lets it start and stop the allocator's timer. The section's header
+shows the last command's result. A failed unit's `journalctl` and `reset-failed` lines appear above them, as text.
 
 ```bash
 uv run --script /opt/fleetwright/scripts/fleetwright_dash.py      # as a member of fleetwright-admin
 ```
 
-It only reads: the journal (the `systemd-journal` group), `systemctl is-active` and `/var/lib/fleetwright/slots`.
+Apart from those four commands it only reads: the journal (the `systemd-journal` group), `systemctl is-active` and `/var/lib/fleetwright/slots`.
 It never reads `/etc/fleetwright`, so it finds the slots from the journal, and a slot that has never logged has
 no panel until it does. systemd's routine lines about a unit starting and ending are left out so the unit's own
 lines show; its lines about failures and signals stay.
