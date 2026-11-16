@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -201,3 +202,91 @@ def test_systemds_lines_about_failures_and_signals_are_kept(message: str) -> Non
 
 def test_a_units_own_line_is_kept_even_if_it_reads_like_systemds() -> None:
     assert entry_line({"_SYSTEMD_UNIT": AGENT, "MESSAGE": "Started the test run"}) is not None
+
+
+# --- the time of the latest line, and whether a unit starts on its own ----------------------------
+
+WHEN = 1_763_262_148.0  # an instant; shown in local time, as the journal shows it
+
+
+def test_a_panel_remembers_when_its_latest_line_was_logged() -> None:
+    dash = Dashboard([AGENT])
+    stamp = str(int(WHEN * 1_000_000))
+    dash.feed(json.dumps({"_SYSTEMD_UNIT": AGENT, "MESSAGE": "x", "__REALTIME_TIMESTAMP": stamp}))
+    assert dash.panels[AGENT].updated == WHEN
+
+
+def test_the_header_shows_the_latest_lines_time_on_the_right() -> None:
+    dash = Dashboard([WATCHDOG])
+    dash.add(WATCHDOG, "watchdog: clean", WHEN)
+    header = render(dash, 80, 10)[0]
+    clock = time.strftime("%H:%M:%S", time.localtime(WHEN))
+    assert header.rstrip("─ ").endswith(clock)
+    assert len(header) == 80
+    assert header.index("watchdog") < header.index(clock)
+
+
+def test_a_panel_with_no_lines_has_no_time() -> None:
+    header = render(Dashboard([WATCHDOG]), 80, 10)[0]
+    assert ":" not in header.split("watchdog", 1)[1]
+
+
+def refreshed(tmp_path: Path, states: dict[str, str], stopped: bool = False) -> Dashboard:
+    slots = tmp_path / "slots"
+    slots.mkdir(exist_ok=True)
+    if stopped:
+        (tmp_path / "STOP").write_text("why\n", encoding="utf-8")
+    dash = Dashboard([AGENT, REVIEW, ALLOCATE, WATCHDOG])
+    dash.refresh(FakeSystemctl(states), slots, tmp_path / "STOP")
+    return dash
+
+
+def test_a_timer_driven_unit_between_passes_says_its_timer_is_on(tmp_path: Path) -> None:
+    dash = refreshed(
+        tmp_path, {"fleetwright-allocate.timer": "active", "fleetwright-watchdog.timer": "active"}
+    )
+    assert dash.panels[WATCHDOG].state == "inactive"
+    assert dash.panels[WATCHDOG].mode == "timer on"
+    assert dash.panels[ALLOCATE].mode == "timer on"
+    assert "inactive · timer on" in render(dash, 80, 60)[3 * 6]
+
+
+def test_a_timer_that_is_off_is_shown(tmp_path: Path) -> None:
+    dash = refreshed(tmp_path, {"fleetwright-allocate.timer": "active"})
+    assert dash.panels[WATCHDOG].mode == "timer off"
+
+
+def test_a_slot_is_auto_while_the_allocator_can_start_it(tmp_path: Path) -> None:
+    dash = refreshed(tmp_path, {"fleetwright-allocate.timer": "active"})
+    assert dash.panels[AGENT].mode == "auto"
+    assert dash.panels[REVIEW].mode == "auto"
+
+
+@pytest.mark.parametrize(
+    ("states", "stopped", "mode"),
+    [
+        ({"fleetwright-allocate.timer": "inactive"}, False, "allocator off"),
+        ({"fleetwright-allocate.timer": "active"}, True, "fleet stopped"),
+        ({"fleetwright-allocate.timer": "active", AGENT: "failed"}, False, "held: reset-failed"),
+        ({"fleetwright-allocate.timer": "active", AGENT: "failed"}, True, "held: reset-failed"),
+    ],
+)
+def test_a_slot_says_why_nothing_will_start_it(
+    tmp_path: Path, states: dict[str, str], stopped: bool, mode: str
+) -> None:
+    assert refreshed(tmp_path, states, stopped).panels[AGENT].mode == mode
+
+
+def test_a_routine_line_moves_the_time_but_adds_no_text() -> None:
+    # A quiet allocator pass logs only systemd's start and stop lines; its time should still move.
+    dash = Dashboard([ALLOCATE])
+    stamp = str(int(WHEN * 1_000_000))
+    entry = {
+        "_SYSTEMD_UNIT": "init.scope",
+        "UNIT": ALLOCATE,
+        "MESSAGE": "fleetwright-allocate.service: Deactivated successfully.",
+        "__REALTIME_TIMESTAMP": stamp,
+    }
+    dash.feed(json.dumps(entry))
+    assert dash.panels[ALLOCATE].updated == WHEN
+    assert list(dash.panels[ALLOCATE].lines) == []

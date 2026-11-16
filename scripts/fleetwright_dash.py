@@ -8,7 +8,8 @@
 
 Panels: each author (``fleetwright-agent@agentNN``), each reviewer (``fleetwright-review@reviewNN``), the
 allocator and the watchdog. An agent's or reviewer's panel also shows its assignment from
-``/var/lib/fleetwright/slots/<slot>``. A failed unit is marked FAILED.
+``/var/lib/fleetwright/slots/<slot>``. A failed unit is marked FAILED. Each header ends with the time
+of the unit's latest line, and says whether the unit starts on its own (see ``Dashboard.refresh``).
 
 It only reads: the journal (as a member of ``systemd-journal``), ``systemctl is-active`` and the slots
 directory. It never reads ``/etc/fleetwright``, so it finds the slots from the journal rather than the
@@ -91,7 +92,9 @@ def entry_line(entry: dict[str, Any]) -> tuple[str, str] | None:
 class Panel:
     unit: str
     state: str = "unknown"
+    mode: str = ""  # whether something will start the unit on its own: see Dashboard.refresh
     assignment: str = ""
+    updated: float | None = None  # when its latest line was logged, seconds since the epoch
     lines: deque[str] = field(default_factory=lambda: deque(maxlen=LINES))
 
     @property
@@ -115,8 +118,11 @@ class Dashboard:
             self.panels = {u: self.panels[u] for u in sorted(self.panels, key=_order)}
         return self.panels[unit]
 
-    def add(self, unit: str, text: str) -> None:
-        self._panel(unit).lines.append(text)
+    def add(self, unit: str, text: str, when: float | None = None) -> None:
+        panel = self._panel(unit)
+        panel.lines.append(text)
+        if when is not None:
+            panel.updated = when
 
     def feed(self, raw: str) -> None:
         """One line of ``journalctl --output=json``; anything unreadable is skipped."""
@@ -124,14 +130,48 @@ class Dashboard:
             entry = json.loads(raw)
         except ValueError:
             return
-        found = entry_line(entry) if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            return
+        stamp = str(entry.get("__REALTIME_TIMESTAMP") or "")
+        when = int(stamp) / 1_000_000 if stamp.isdigit() else None
+        found = entry_line(entry)
         if found:
-            self.add(*found)
+            self.add(*found, when)
+            return
+        # systemd's routine line about a unit: no text, but the unit did something, so its time moves.
+        about = str(entry.get("UNIT") or "")
+        if when is not None and is_panel_unit(about):
+            self._panel(about).updated = when
 
-    def refresh(self, systemctl: Systemctl, slots_dir: Path) -> None:
+    def refresh(self, systemctl: Systemctl, slots_dir: Path, stop_file: Path | None = None) -> None:
+        """Each unit's state and assignment, and its mode: whether something will start it on its own.
+
+        The allocator and the watchdog run a short pass and exit, so between passes they are inactive and
+        their timer says whether another pass comes. A slot is started by the allocator: ``auto`` unless
+        the allocator's timer is off, the fleet is stopped, or the unit failed and holds its work.
+        """
+
+        def active(unit: str) -> bool:
+            return systemctl(["is-active", unit])[1].strip() == "active"
+
+        stop = stop_file if stop_file is not None else slots_dir.parent / "STOP"
+        stopped = stop.exists()
+        timers = {u: active(u.removesuffix(".service") + ".timer") for u in (ALLOCATE, WATCHDOG)}
         for panel in self.panels.values():
             panel.state = systemctl(["is-active", panel.unit])[1].strip() or "unknown"
             panel.assignment = ""
+            if panel.unit in timers:
+                panel.mode = "timer on" if timers[panel.unit] else "timer off"
+                continue
+            panel.mode = (
+                "held: reset-failed"
+                if panel.state == "failed"
+                else "fleet stopped"
+                if stopped
+                else "auto"
+                if timers[ALLOCATE]
+                else "allocator off"
+            )
             if panel.slot:
                 with contextlib.suppress(OSError):
                     panel.assignment = (slots_dir / panel.slot).read_text(encoding="utf-8").strip()
@@ -139,8 +179,19 @@ class Dashboard:
 
 def _panel_rows(panel: Panel, width: int) -> list[str]:
     state = "FAILED" if panel.state == "failed" else panel.state
-    head = f"{panel.title}  {state}" + (f"  {panel.assignment}" if panel.assignment else "")
-    rows = [f"── {head} ".ljust(width, "─")[:width]]
+    if panel.mode:
+        state += f" · {panel.mode}"
+    head = (
+        f"── {panel.title}  {state}" + (f"  {panel.assignment}" if panel.assignment else "") + " "
+    )
+    clock = (
+        f" {time.strftime('%H:%M:%S', time.localtime(panel.updated))} ──"
+        if panel.updated is not None
+        else ""
+    )
+    if len(head) + len(clock) > width:
+        clock = ""
+    rows = [(head.ljust(width - len(clock), "─") + clock)[:width]]
     body = list(panel.lines)
     rows += [f"  {line}"[:width] for line in body] + [""] * (LINES - len(body))
     return rows

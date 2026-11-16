@@ -384,7 +384,13 @@ run until it is merged; raise `stuck_pr_minutes` if that is noise.
 
 [`scripts/fleetwright_dash.py`](../scripts/fleetwright_dash.py) shows the whole fleet in one terminal: a panel
 per author, per reviewer, the allocator and the watchdog, each with the unit's state, the slot's assignment and
-its latest 5 journal lines as they arrive. A failed unit is marked FAILED. `q` quits.
+its latest 5 journal lines as they arrive, and on the right the time of the latest line. A failed unit is
+marked FAILED. `q` quits.
+
+Next to the state, each header says whether the unit starts on its own. The allocator and the watchdog run a
+pass of a few seconds and exit, so between passes they are `inactive`, and `timer on` means another pass is
+coming (`timer off`: none will). A slot is started by the allocator: `auto`, or why not: `fleet stopped`,
+`allocator off`, or `held: reset-failed` for a failed unit that holds its work until a person resets it.
 
 ```bash
 uv run --script /opt/fleetwright/scripts/fleetwright_dash.py      # as a member of fleetwright-admin
