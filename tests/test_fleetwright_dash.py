@@ -300,30 +300,65 @@ STOP = "python3 /opt/fleetwright/scripts/fleetwright_stop.py"
 
 def test_the_commands_section_shows_the_keystroke_commands_then_the_typed_ones() -> None:
     assert fleetwright_dash.commands(Dashboard([AGENT, WATCHDOG])) == [
-        f'ss: {STOP} stop "from dashboard"   --| stop the fleet',
-        f"cc: {STOP} clear   --| restart the fleet",
-        "pp: systemctl stop fleetwright-allocate.timer   --| pause new work",
-        "rr: systemctl start fleetwright-allocate.timer   --| resume new work",
-        "  : systemctl start fleetwright-allocate-dry-run; "
-        "journalctl -u fleetwright-allocate-dry-run -o cat -n 20   "
-        "--| what the allocator would assign",
-        "  : systemctl start fleetwright-check-agent@agentNN   --| check a slot "
-        "(fleetwright-check-review@reviewNN)",
-        "  : systemctl stop fleetwright-agent@agentNN   --| stop one agent; "
-        "its next run keeps or stashes its work",
-        "  : journalctl -u fleetwright-agent@agentNN -o cat -n 50   --| an agent's full log",
-        "  : systemctl start fleetwright-report   --| the token report; "
-        "docs/control-plane.md has how to read it",
+        (f'ss: {STOP} stop "from dashboard"', "stop the fleet"),
+        (f"cc: {STOP} clear", "restart the fleet"),
+        ("pp: systemctl stop fleetwright-allocate.timer", "pause new work"),
+        ("rr: systemctl start fleetwright-allocate.timer", "resume new work"),
+        (
+            "  : systemctl start fleetwright-allocate-dry-run; "
+            "journalctl -u fleetwright-allocate-dry-run -o cat -n 20",
+            "what the allocator would assign",
+        ),
+        (
+            "  : systemctl start fleetwright-check-agent@agentNN",
+            "check a slot (fleetwright-check-review@reviewNN)",
+        ),
+        (
+            "  : systemctl stop fleetwright-agent@agentNN",
+            "stop one agent; its next run keeps or stashes its work",
+        ),
+        ("  : journalctl -u fleetwright-agent@agentNN -o cat -n 50", "an agent's full log"),
+        (
+            "  : systemctl start fleetwright-report",
+            "the token report; docs/control-plane.md has how to read it",
+        ),
     ]
 
 
 def test_a_typed_command_has_no_keystroke() -> None:
-    typed = [c for c in fleetwright_dash.commands(Dashboard([AGENT])) if c.startswith("  : ")]
-    assert len(typed) == 5
+    commands = fleetwright_dash.commands(Dashboard([AGENT]))
+    assert len([c for c, _ in commands if c.startswith("  : ")]) == 5
     keys = fleetwright_dash.Keys()
     for letter in "adjtk":  # none of the typed commands' first letters runs anything
         keys.press(letter, 10.0)
         assert keys.press(letter, 10.1) is None
+
+
+def command_rows(width: int) -> list[str]:
+    screen = render(Dashboard([AGENT]), width, 60)
+    start = next(i for i, row in enumerate(screen) if "commands" in row)
+    return screen[start + 1 :]
+
+
+def test_each_note_is_right_justified_with_no_marker() -> None:
+    rows = command_rows(150)
+    ss = next(row for row in rows if row.lstrip().startswith("ss:"))
+    assert ss.endswith("stop the fleet") and len(ss) == 150
+    assert not any("--|" in row for row in rows)
+    report = next(row for row in rows if "fleetwright-report" in row)
+    assert report.endswith("docs/control-plane.md has how to read it") and len(report) == 150
+
+
+def test_a_narrow_row_keeps_the_command_and_leaves_out_a_note_that_does_not_fit() -> None:
+    rows = command_rows(120)
+    dry = next(row for row in rows if "allocate-dry-run" in row)
+    assert len(dry) <= 120
+    assert dry.rstrip().endswith("-n 20")  # no stub of the note after the command
+    rows = command_rows(80)
+    dry = next(row for row in rows if "allocate-dry-run" in row)
+    assert len(dry) <= 80
+    ss = next(row for row in rows if row.lstrip().startswith("ss:"))
+    assert 'stop "from dashboard"' in ss
 
 
 def test_each_keystroke_runs_exactly_its_command() -> None:
@@ -338,7 +373,7 @@ def test_each_keystroke_runs_exactly_its_command() -> None:
 
 def test_a_failed_unit_gets_its_own_lines_above_the_commands(tmp_path: Path) -> None:
     dash = refreshed(tmp_path, {"fleetwright-allocate.timer": "active", AGENT: "failed"})
-    lines = fleetwright_dash.commands(dash)
+    lines = [text for text, _ in fleetwright_dash.commands(dash)]
     assert "agent01" in lines[0] and "failed" in lines[0]
     assert "systemctl reset-failed fleetwright-agent@agent01" in "\n".join(lines[:3])
     assert "journalctl -u fleetwright-agent@agent01" in "\n".join(lines[:3])
@@ -423,3 +458,51 @@ def test_the_panels_keep_priority_on_a_short_terminal() -> None:
     screen = render(dash, 100, 12)
     assert len(screen) == 12
     assert sum(row.startswith("── agent01") or row.startswith("── watchdog") for row in screen) == 2
+
+
+# --- filling the panels at start ----------------------------------------------------------------
+
+
+def journal_line(unit_key: str, unit: str, message: str, at: int) -> str:
+    return json.dumps({unit_key: unit, "MESSAGE": message, "__REALTIME_TIMESTAMP": str(at)})
+
+
+def test_backfill_finds_a_units_own_lines_behind_many_routine_ones() -> None:
+    # A quiet allocator logs only systemd's start and stop lines for hours, far past its own.
+    asked: list[list[str]] = []
+
+    def run(argv: Sequence[str]) -> tuple[int, str]:
+        asked.append(list(argv))
+        if f"_SYSTEMD_UNIT={ALLOCATE}" in argv:
+            own = [
+                journal_line("_SYSTEMD_UNIT", ALLOCATE, f"assign agent0{i}: issue {i}", i)
+                for i in (1, 2)
+            ]
+            return 0, "\n".join(own)
+        if f"UNIT={ALLOCATE}" in argv:
+            routine = "fleetwright-allocate.service: Deactivated successfully."
+            return 0, "\n".join(journal_line("UNIT", ALLOCATE, routine, 100 + i) for i in range(20))
+        return 0, ""
+
+    dash = Dashboard([ALLOCATE])
+    fleetwright_dash.backfill(dash, run)
+    panel = dash.panels[ALLOCATE]
+    assert list(panel.lines) == ["assign agent01: issue 1", "assign agent02: issue 2"]
+    assert panel.updated == 119 / 1_000_000
+
+
+def test_backfill_puts_systemds_failure_lines_in_time_order() -> None:
+    def run(argv: Sequence[str]) -> tuple[int, str]:
+        if f"_SYSTEMD_UNIT={AGENT}" in argv:
+            return 0, journal_line("_SYSTEMD_UNIT", AGENT, "the clone has uncommitted changes", 5)
+        if f"UNIT={AGENT}" in argv:
+            failed = "fleetwright-agent@agent01.service: Failed with result 'exit-code'."
+            return 0, journal_line("UNIT", AGENT, failed, 6)
+        return 0, ""
+
+    dash = Dashboard([AGENT])
+    fleetwright_dash.backfill(dash, run)
+    assert list(dash.panels[AGENT].lines) == [
+        "the clone has uncommitted changes",
+        "fleetwright-agent@agent01.service: Failed with result 'exit-code'.",
+    ]

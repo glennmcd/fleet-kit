@@ -407,6 +407,10 @@ can write the stop flag, and the polkit rule lets it start and stop the allocato
 shows the last command's result. A failed unit's `journalctl` and `reset-failed` lines appear above them, and
 the commands with no keystroke follow them, marked `  : ` where the keys would be: the allocator's dry run,
 checking a slot, stopping one agent, an agent's full log and the token report. Those are text only, to type.
+What each command does is aligned to the right edge; on a row too narrow for both, it is left out.
+
+At start each panel is filled from the unit's own last 5 lines and systemd's recent lines about it, read apart
+and merged by time, so an allocator that has logged only empty passes for hours still shows its last work.
 
 ```bash
 uv run --script /opt/fleetwright/scripts/fleetwright_dash.py      # as a member of fleetwright-admin

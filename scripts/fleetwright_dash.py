@@ -51,7 +51,9 @@ REFRESH_SECONDS = 2.0
 ROUTINE = re.compile(
     r"(Starting|Started|Finished) \S+\.service|\S+\.service: (Deactivated successfully|Consumed )"
 )
-BACKFILL = 200  # journal lines read per unit at start, to find the last 5 that are not routine
+BACKFILL = (
+    50  # systemd's lines about a unit read at start, for its failures and the time it last ran
+)
 CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x1f\x7f]")
 
 Fields = Callable[[str], list[str]]  # journalctl -F <field>: every value the journal holds for it
@@ -279,20 +281,30 @@ def run_action(key: str, run: Callable[[Sequence[str]], tuple[int, str]]) -> str
     return f"{key} {action.label}: {result}" + (f": {first}" if first else "")
 
 
-def commands(dash: Dashboard) -> list[str]:
+def commands(dash: Dashboard) -> list[tuple[str, str]]:
     """The commands section: each failed unit's own commands first, as text, then the four keystrokes, then
-    the commands to type, marked ``  : `` where a keystroke would be."""
-    first: list[str] = []
+    the commands to type, marked ``  : `` where a keystroke would be. Each is (command, what it does)."""
+    first: list[tuple[str, str]] = []
     for panel in dash.panels.values():
         if panel.state == "failed":
+            unit = panel.unit.removesuffix(".service")
             first += [
-                f"{panel.title} failed and holds its work:",
-                f"  journalctl -u {panel.unit.removesuffix('.service')} -o cat -n 50",
-                f"  systemctl reset-failed {panel.unit.removesuffix('.service')}",
+                (f"{panel.title} failed and holds its work:", ""),
+                (f"  journalctl -u {unit} -o cat -n 50", ""),
+                (f"  systemctl reset-failed {unit}", ""),
             ]
-    keyed = [f"{key}: {a.text}   --| {a.label}" for key, a in ACTIONS.items()]
-    typed = [f"  : {command}   --| {does}" for command, does in TYPED]
+    keyed = [(f"{key}: {a.text}", a.label) for key, a in ACTIONS.items()]
+    typed = [(f"  : {command}", does) for command, does in TYPED]
     return first + keyed + typed
+
+
+def _command_row(text: str, note: str, width: int) -> str:
+    """The command on the left and what it does against the right edge. When both do not fit, the note is
+    left out rather than cut, and the command is kept as far as the row allows."""
+    row = f"  {text}"
+    if note and len(row) + 2 + len(note) <= width:
+        return row + " " * (width - len(row) - len(note)) + note
+    return row[:width]
 
 
 def render(dash: Dashboard, width: int, height: int) -> list[str]:
@@ -311,7 +323,7 @@ def render(dash: Dashboard, width: int, height: int) -> list[str]:
     if len(screen) + 2 <= height:
         title = "── commands  (press the letter twice) " + (f"── {dash.note} " if dash.note else "")
         screen.append(title.ljust(width, "─")[:width])
-        screen += [f"  {line}"[:width] for line in commands(dash)]
+        screen += [_command_row(text, note, width) for text, note in commands(dash)]
     return screen[:height]
 
 
@@ -355,12 +367,24 @@ def _systemctl(args: Sequence[str]) -> tuple[int, str]:
     return _run(["systemctl", *args])
 
 
-def _backfill(dash: Dashboard) -> None:
+def backfill(dash: Dashboard, run: Callable[[Sequence[str]], tuple[int, str]]) -> None:
+    """Fills each panel at start: the unit's own last lines, and systemd's recent lines about it (its
+    failures, and the time it last ran), in the order they were logged.
+
+    Asked for apart, because a unit that logs nothing of its own, like an allocator with no work, can have
+    hours of systemd's start and stop lines in front of its own last ones.
+    """
     for unit in list(dash.panels):
-        out = _run(
-            ["journalctl", "--unit", unit, f"--lines={BACKFILL}", "--output=json", "--no-pager"]
-        )
-        for raw in out[1].splitlines():
+        found: list[tuple[int, str]] = []
+        for match, lines in ((f"_SYSTEMD_UNIT={unit}", LINES), (f"UNIT={unit}", BACKFILL)):
+            out = run(["journalctl", match, f"--lines={lines}", "--output=json", "--no-pager"])[1]
+            for raw in out.splitlines():
+                try:
+                    stamp = int(json.loads(raw).get("__REALTIME_TIMESTAMP") or 0)
+                except (ValueError, AttributeError):
+                    continue
+                found.append((stamp, raw))
+        for _, raw in sorted(found, key=lambda item: item[0]):
             dash.feed(raw)
 
 
@@ -384,7 +408,7 @@ def _loop(screen: Any) -> int:
     curses.curs_set(0)
     screen.nodelay(True)
     dash = Dashboard(discover(_fields))
-    _backfill(dash)
+    backfill(dash, _run)
     follow = subprocess.Popen(follow_command(), stdout=subprocess.PIPE, text=True, bufsize=1)
     assert follow.stdout is not None
     os.set_blocking(follow.stdout.fileno(), False)
