@@ -98,8 +98,11 @@ Result (2026-11-15), on the first machine (Ubuntu 26.04, four author slots and o
   three were refused on their next tool call and ended within a minute, each saying what it left uncommitted.
   The fourth had started a one-minute `gh pr checks --watch` three seconds before the flag; the hook checks a
   call when it starts, so that call finished and the agent ended with its PR opened. While the flag stood the
-  allocator assigned nothing; after clearing it gave the unfinished issues out again. Not exercised on the
-  machine: a stalled agent and a red main, which have unit tests only.
+  allocator assigned nothing; after clearing it gave the unfinished issues out again. A red main (2026-11-15):
+  commitment-tracker-ai's manual `fleet-drill` workflow failed a check on main's head, and the watchdog's next
+  pass, three minutes later, set the stop flag; the allocator assigned nothing and a slot's check failed until
+  the flag was cleared. Not exercised on the machine: a stalled agent (the first attempt sent no `SIGSTOP`),
+  which has unit tests only.
 - **Compared**: about 255,000 weighted tokens per merged PR, reviews included, against the baseline's 925,000.
   Median context 26,500 against 92,500 to 171,000, and no call at 150k or more. Per changed line the fleet is
   about 4,350 against 870, because five of the six PRs changed 2 to 24 lines; the one of ordinary size cost
@@ -112,8 +115,16 @@ Found by running it, and still open:
   minutes.
 - A slot has no git identity, so an agent's first commit fails and it invents one. Fixed: `fleetwright_slot.py add`
   sets `agentNN (fleet)` and the `--git-email` address in the clone; the existing slots need `add` run again.
-- Two author agents approved their own pull requests. Fixed in 7f2a6ff and cc-practices 0.8.1; not yet seen
-  holding in a real run.
+- Two author agents approved their own pull requests. Fixed in 7f2a6ff and cc-practices 0.8.1; held in the
+  run of issues 53 to 56, whose PRs carry verdicts from `g26work` only.
+- After the rename, the slots' cached cc-practices 0.8.1 still wrote the `fleet-verdict` marker, which
+  fleetwright 0.5.0 does not read, so `reviewer-verdict` failed on four approved PRs. Fixed on the machine by
+  updating cc-practices to 0.9.0 in every slot and clearing those heads from `state.json` for a new review.
+  Updating the kit and the practices plugin together belongs in `docs/vm-setup.md`'s *Updating*.
+- The watchdog called main red while any run of a check had failed, even after a newer run of the same check
+  passed. Found in the red-main drill; fixed in bd9f80d, which judges each check by its newest run.
+- An agent stopped by the flag leaves its work uncommitted in the clone, and the slot's next run refuses the
+  clone and fails, holding its issue until a person stashes the work. Open.
 - A slot's transcripts are readable only by the slot, so `fleetwright_report.py` needed root. Fixed:
   `fleetwright-report.service` runs it for fleetwright-admin with `CAP_DAC_READ_SEARCH` and no network or secrets.
 
