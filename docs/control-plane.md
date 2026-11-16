@@ -404,7 +404,9 @@ letter twice within a second:
 
 They are fixed in the script, run as the dashboard's user without a shell, and need no root: fleetwright-admin
 can write the stop flag, and the polkit rule lets it start and stop the allocator's timer. The section's header
-shows the last command's result. A failed unit's `journalctl` and `reset-failed` lines appear above them, as text.
+shows the last command's result. A failed unit's `journalctl` and `reset-failed` lines appear above them, and
+the commands with no keystroke follow them, marked `  : ` where the keys would be: the allocator's dry run,
+checking a slot, stopping one agent, an agent's full log and the token report. Those are text only, to type.
 
 ```bash
 uv run --script /opt/fleetwright/scripts/fleetwright_dash.py      # as a member of fleetwright-admin

@@ -229,6 +229,28 @@ ACTIONS: dict[str, Action] = {
 }
 DOUBLE_PRESS_SECONDS = 1.0
 
+# Commands with no keystroke, shown as text for the operator to type: (command, what it does).
+TYPED = [
+    (
+        "systemctl start fleetwright-allocate-dry-run; "
+        "journalctl -u fleetwright-allocate-dry-run -o cat -n 20",
+        "what the allocator would assign",
+    ),
+    (
+        "systemctl start fleetwright-check-agent@agentNN",
+        "check a slot (fleetwright-check-review@reviewNN)",
+    ),
+    (
+        "systemctl stop fleetwright-agent@agentNN",
+        "stop one agent; its next run keeps or stashes its work",
+    ),
+    ("journalctl -u fleetwright-agent@agentNN -o cat -n 50", "an agent's full log"),
+    (
+        "systemctl start fleetwright-report",
+        "the token report; docs/control-plane.md has how to read it",
+    ),
+]
+
 
 class Keys:
     """Turns keystrokes into a command: the same letter twice within a second. Anything else starts over."""
@@ -258,7 +280,8 @@ def run_action(key: str, run: Callable[[Sequence[str]], tuple[int, str]]) -> str
 
 
 def commands(dash: Dashboard) -> list[str]:
-    """The commands section: each failed unit's own commands first, as text, then the four keystrokes."""
+    """The commands section: each failed unit's own commands first, as text, then the four keystrokes, then
+    the commands to type, marked ``  : `` where a keystroke would be."""
     first: list[str] = []
     for panel in dash.panels.values():
         if panel.state == "failed":
@@ -267,7 +290,9 @@ def commands(dash: Dashboard) -> list[str]:
                 f"  journalctl -u {panel.unit.removesuffix('.service')} -o cat -n 50",
                 f"  systemctl reset-failed {panel.unit.removesuffix('.service')}",
             ]
-    return first + [f"{key}: {a.text}   --| {a.label}" for key, a in ACTIONS.items()]
+    keyed = [f"{key}: {a.text}   --| {a.label}" for key, a in ACTIONS.items()]
+    typed = [f"  : {command}   --| {does}" for command, does in TYPED]
+    return first + keyed + typed
 
 
 def render(dash: Dashboard, width: int, height: int) -> list[str]:

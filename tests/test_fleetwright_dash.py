@@ -298,13 +298,32 @@ def test_a_routine_line_moves_the_time_but_adds_no_text() -> None:
 STOP = "python3 /opt/fleetwright/scripts/fleetwright_stop.py"
 
 
-def test_the_commands_section_shows_the_four_keystroke_commands() -> None:
+def test_the_commands_section_shows_the_keystroke_commands_then_the_typed_ones() -> None:
     assert fleetwright_dash.commands(Dashboard([AGENT, WATCHDOG])) == [
         f'ss: {STOP} stop "from dashboard"   --| stop the fleet',
         f"cc: {STOP} clear   --| restart the fleet",
         "pp: systemctl stop fleetwright-allocate.timer   --| pause new work",
         "rr: systemctl start fleetwright-allocate.timer   --| resume new work",
+        "  : systemctl start fleetwright-allocate-dry-run; "
+        "journalctl -u fleetwright-allocate-dry-run -o cat -n 20   "
+        "--| what the allocator would assign",
+        "  : systemctl start fleetwright-check-agent@agentNN   --| check a slot "
+        "(fleetwright-check-review@reviewNN)",
+        "  : systemctl stop fleetwright-agent@agentNN   --| stop one agent; "
+        "its next run keeps or stashes its work",
+        "  : journalctl -u fleetwright-agent@agentNN -o cat -n 50   --| an agent's full log",
+        "  : systemctl start fleetwright-report   --| the token report; "
+        "docs/control-plane.md has how to read it",
     ]
+
+
+def test_a_typed_command_has_no_keystroke() -> None:
+    typed = [c for c in fleetwright_dash.commands(Dashboard([AGENT])) if c.startswith("  : ")]
+    assert len(typed) == 5
+    keys = fleetwright_dash.Keys()
+    for letter in "adjtk":  # none of the typed commands' first letters runs anything
+        keys.press(letter, 10.0)
+        assert keys.press(letter, 10.1) is None
 
 
 def test_each_keystroke_runs_exactly_its_command() -> None:
