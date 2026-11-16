@@ -216,7 +216,7 @@ The units run [`scripts/fleetwright_agent.py`](../scripts/fleetwright_agent.py),
 | the stop flag is absent | exit 75; nothing starts while the fleet is stopped |
 | review slots: `gh` is signed in as `FLEETWRIGHT_REVIEWER_LOGIN` | exit 64 |
 | the assignment is `issue <n>` or `fix <n>` (authors) or `review <pr>` (reviewers) | no file: idle, exit 0. Anything else: exit 65 |
-| the clone has no uncommitted changes | exit 70. It is left as it is for a person to look at |
+| uncommitted changes an earlier run left (the stop flag ends a run before it commits) | on this run's `issue/<n>` branch: kept, and the agent is told to carry on from them. Anything else: stashed (`git stash list` in the clone), and the run starts clean. If the stash fails, exit 70 and the clone is left for a person |
 | `git fetch` and the checkout work | exit 70 |
 
 An author works on the branch `issue/<n>`: the local one, fast-forwarded to the pushed one; the pushed one if

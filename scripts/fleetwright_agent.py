@@ -15,8 +15,10 @@ The units (``fleetwright-agent@.service`` and ``fleetwright-review@.service``, f
 4. reads the slot's assignment from ``/var/lib/fleetwright/slots/<slot>``, written by ``scripts/fleetwright_allocate.py``:
    ``issue <n>`` or ``fix <n>`` for an author, ``review <pr>`` for a reviewer. No file means the slot is idle,
    which is not a failure;
-5. refuses a clone with uncommitted changes. A previous run left them; discarding them is a person's
-   decision, so the slot stays down until someone looks;
+5. deals with uncommitted changes an earlier run left, which happens when the stop flag ends a run before
+   it commits. On the branch of the issue this run works on, they are kept and the agent is told to carry on
+   from them; anything else is stashed (``git stash list`` in the clone) and the run starts clean. Nothing
+   is discarded, and if the stash fails the slot stays down until someone looks;
 6. fetches, and puts the clone where the work is: an author on the branch ``issue/<n>`` (the local one,
    brought up to the pushed one; the pushed one if another slot started it; else a new one from
    ``origin/main``), a reviewer on the pull request's head commit, detached;
@@ -58,7 +60,14 @@ Launch = Callable[[Sequence[str]], int]
 WhoAmI = Callable[[], str | None]
 
 
-def issue_prompt(issue: int) -> str:
+# Fixed text, added to an author's prompt when the clone holds a stopped run's work on the same issue.
+RESUME_NOTE = (
+    " A run on this issue was stopped before it committed, and its uncommitted work is in the clone. "
+    "Read `git status` and `git diff`, keep what is right, and carry on from there."
+)
+
+
+def issue_prompt(issue: int, resumed: bool = False) -> str:
     return (
         f"Work on GitHub issue #{issue} of this repository. Read it with `gh issue view {issue}`. "
         "Its Done when list is your approval and your definition of finished. "
@@ -67,10 +76,10 @@ def issue_prompt(issue: int) -> str:
         "Stop when every check except `reviewer-verdict` passes, or write a handoff if you cannot "
         "finish. `reviewer-verdict` stays red until the fleet's reviewer posts its verdict: that is "
         "not yours to pass. Do not post review verdicts and do not run the review-pr skill."
-    )
+    ) + (RESUME_NOTE if resumed else "")
 
 
-def fix_prompt(issue: int) -> str:
+def fix_prompt(issue: int, resumed: bool = False) -> str:
     return (
         f"The pull request from the branch issue/{issue}, for GitHub issue #{issue}, needs a fix round: "
         "its checks fail, it conflicts with main, or the reviewer requested changes. You are on that "
@@ -79,7 +88,7 @@ def fix_prompt(issue: int) -> str:
         "branch. Stop when every check except `reviewer-verdict` passes, or write a handoff if you "
         "cannot finish. `reviewer-verdict` stays red until the fleet's reviewer posts its verdict: that "
         "is not yours to pass. Do not post review verdicts and do not run the review-pr skill."
-    )
+    ) + (RESUME_NOTE if resumed else "")
 
 
 def review_prompt(pr: int) -> str:
@@ -107,23 +116,49 @@ def read_assignment(path: Path) -> tuple[str, int] | None:
     return m.group(1), int(m.group(2))
 
 
-def _clean(git: Git) -> str | None:
+def settle_leftovers(git: Git, branch: str | None) -> tuple[str | None, bool]:
+    """Uncommitted changes an earlier run left: kept when they are on ``branch``, else stashed.
+
+    Returns what went wrong, or None, and whether the changes were kept for this run.
+    """
     code, changes = git(["status", "--porcelain"])
     if code != 0:
-        return "git status failed in the clone"
-    if changes.strip():
-        return "the clone has uncommitted changes from an earlier run; not touching them"
-    return None
+        return "git status failed in the clone", False
+    if not changes.strip():
+        return None, False
+    code, out = git(["symbolic-ref", "--short", "-q", "HEAD"])
+    head = out.strip() if code == 0 else ""
+    if branch is not None and head == branch:
+        print(f"fleetwright_agent: keeping uncommitted work left on {branch} by a stopped run")
+        return None, True
+    where = head or "a detached head"
+    stash = [
+        "stash",
+        "push",
+        "--include-untracked",
+        "-m",
+        f"fleetwright: left on {where} by a stopped run",
+    ]
+    if git(stash)[0] != 0:
+        return (
+            "the clone has uncommitted changes from an earlier run and git stash failed; not touching them",
+            False,
+        )
+    print(
+        f"fleetwright_agent: stashed uncommitted work left on {where} by an earlier run (git stash list)"
+    )
+    return None, False
 
 
-def checkout_issue(issue: int, git: Git) -> str | None:
-    """Put the clone on the issue's branch. Returns what went wrong, or None."""
-    problem = _clean(git)
-    if problem:
-        return problem
-    if git(["fetch", "origin"])[0] != 0:
-        return "git fetch failed"
+def checkout_issue(issue: int, git: Git) -> tuple[str | None, bool]:
+    """Put the clone on the issue's branch. Returns what went wrong, or None, and whether a stopped run's
+    work on this issue was kept."""
     branch = f"issue/{issue}"
+    problem, resumed = settle_leftovers(git, branch)
+    if problem:
+        return problem, False
+    if git(["fetch", "origin"])[0] != 0:
+        return "git fetch failed", resumed
     local = git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])[0] == 0
     pushed = git(["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"])[0] == 0
     if local:
@@ -133,15 +168,18 @@ def checkout_issue(issue: int, git: Git) -> str | None:
     else:
         switch = ["switch", "-c", branch, BASE]
     if git(switch)[0] != 0:
-        return f"could not switch to {branch}"
+        return f"could not switch to {branch}", resumed
     if local and pushed and git(["merge", "--ff-only", f"origin/{branch}"])[0] != 0:
-        return f"the local {branch} has diverged from the pushed one; not choosing between them"
-    return None
+        return (
+            f"the local {branch} has diverged from the pushed one; not choosing between them",
+            resumed,
+        )
+    return None, resumed
 
 
 def checkout_review(pr: int, git: Git) -> str | None:
     """Put the clone on the pull request's head commit, detached. Returns what went wrong, or None."""
-    problem = _clean(git)
+    problem, _ = settle_leftovers(git, None)
     if problem:
         return problem
     ref = f"refs/remotes/origin/pr/{pr}"
@@ -212,8 +250,8 @@ def run(env: Mapping[str, str], git: Git, launch: Launch, whoami: WhoAmI = _gh_l
         problem = checkout_review(number, git)
         text = review_prompt(number)
     else:
-        problem = checkout_issue(number, git)
-        text = issue_prompt(number) if kind == "issue" else fix_prompt(number)
+        problem, resumed = checkout_issue(number, git)
+        text = issue_prompt(number, resumed) if kind == "issue" else fix_prompt(number, resumed)
     if problem:
         _say(f"{slot}: {problem}")
         return NOT_READY

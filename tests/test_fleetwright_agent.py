@@ -13,12 +13,20 @@ from fleetwright_agent import BAD_ASSIGNMENT, BAD_CONFIG, NOT_READY, STOPPED, ru
 
 
 class FakeGit:
-    """Answers git by subcommand. `refs` are the refs that exist; `dirty` is the status output."""
+    """Answers git by subcommand. `refs` are the refs that exist; `dirty` is the status output;
+    `head` is the branch the clone is on, or None when it is detached."""
 
-    def __init__(self, refs: Sequence[str] = (), dirty: str = "", fail: str | None = None) -> None:
+    def __init__(
+        self,
+        refs: Sequence[str] = (),
+        dirty: str = "",
+        fail: str | None = None,
+        head: str | None = "main",
+    ) -> None:
         self.refs = set(refs)
         self.dirty = dirty
         self.fail = fail
+        self.head = head
         self.calls: list[list[str]] = []
 
     def __call__(self, args: Sequence[str]) -> tuple[int, str]:
@@ -29,6 +37,8 @@ class FakeGit:
             return 0, self.dirty
         if args[0] == "rev-parse":
             return (0, "abc") if args[-1] in self.refs else (1, "")
+        if args[0] == "symbolic-ref":
+            return (0, self.head + "\n") if self.head else (1, "")
         return 0, ""
 
     def ran(self, subcommand: str) -> list[list[str]]:
@@ -273,13 +283,46 @@ def test_an_assignment_that_is_not_kind_and_number_is_refused(
     assert launch.argv is None
 
 
-def test_a_dirty_clone_is_left_alone(
+def test_work_a_stopped_run_left_on_this_issue_is_kept_and_the_agent_told(
     env: dict[str, str], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    git, launch = FakeGit(dirty=" M src/app.py\n"), Launch()
+    # The stop flag ended a run on issue 12 before it committed; the next run on it carries on.
+    git = FakeGit(refs=["refs/heads/issue/12"], dirty=" M src/app.py\n", head="issue/12")
+    launch = Launch()
+    assert run(env, git, launch) == 0
+    assert git.ran("stash") == []
+    assert launch.argv is not None
+    assert "uncommitted work" in launch.argv[2]
+    assert "keeping uncommitted work left on issue/12" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("head", ["issue/9", None])
+def test_work_left_by_other_work_is_stashed_and_the_run_goes_on(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str], head: str | None
+) -> None:
+    git, launch = FakeGit(dirty="?? new.py\n", head=head), Launch()
+    assert run(env, git, launch) == 0
+    where = head or "a detached head"
+    message = f"fleetwright: left on {where} by a stopped run"
+    assert git.ran("stash") == [["stash", "push", "--include-untracked", "-m", message]]
+    assert git.calls.index(git.ran("stash")[0]) < git.calls.index(["fetch", "origin"])
+    assert launch.argv is not None
+    assert "uncommitted work" not in launch.argv[2]
+    assert f"stashed uncommitted work left on {where}" in capsys.readouterr().out
+
+
+def test_a_review_clone_with_leftovers_is_stashed(review_env: dict[str, str]) -> None:
+    git, launch = FakeGit(dirty=" M a.py\n", head=None), Launch()
+    assert run(review_env, git, launch, whoami("g26work")) == 0
+    assert len(git.ran("stash")) == 1
+
+
+def test_leftovers_that_cannot_be_stashed_are_left_alone(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    git, launch = FakeGit(dirty=" M src/app.py\n", head="issue/9", fail="stash"), Launch()
     assert run(env, git, launch) == NOT_READY
-    assert git.ran("switch") == []
-    assert git.ran("fetch") == []
+    assert git.ran("fetch") == [] and git.ran("switch") == []
     assert launch.argv is None
     assert "uncommitted" in capsys.readouterr().err
 
@@ -315,6 +358,8 @@ def test_each_prompt_is_fixed_apart_from_its_number() -> None:
         fleetwright_agent.review_prompt,
     ):
         assert make(7).replace("7", "N") == make(12).replace("12", "N")
+    for make in (fleetwright_agent.issue_prompt, fleetwright_agent.fix_prompt):
+        assert make(7, True).replace("7", "N") == make(12, True).replace("12", "N")
     assert "Done when" in fleetwright_agent.issue_prompt(7)
     assert "do not change" in fleetwright_agent.review_prompt(7).lower()
 

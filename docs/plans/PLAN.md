@@ -124,7 +124,8 @@ Found by running it, and still open:
 - The watchdog called main red while any run of a check had failed, even after a newer run of the same check
   passed. Found in the red-main drill; fixed in bd9f80d, which judges each check by its newest run.
 - An agent stopped by the flag leaves its work uncommitted in the clone, and the slot's next run refuses the
-  clone and fails, holding its issue until a person stashes the work. Open.
+  clone and fails, holding its issue until a person stashes the work. Fixed: the next run keeps the work
+  when it is on the same issue's branch and tells the agent so, and stashes it otherwise.
 - A slot's transcripts are readable only by the slot, so `fleetwright_report.py` needed root. Fixed:
   `fleetwright-report.service` runs it for fleetwright-admin with `CAP_DAC_READ_SEARCH` and no network or secrets.
 
