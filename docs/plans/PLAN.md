@@ -50,32 +50,36 @@ reusable workflow, which is why fleetwright is public (main and tags are protect
 on commitment-tracker-ai's main. The reviewer has its own account, `g26work`, which is the only one in
 `verdict.reviewers` there; on the fleet machine it posts from review slots (round 5).
 
-## Round 5: control plane (VM)
+## Round 5: control plane (VM): done
 
 - VM setup that lists the skills it installs and keeps claude.ai skill sync off (from round 2), and installs
   `uv`, `claude`, `gh`, `rtk` and both plugins for each slot's user. Written: `docs/vm-setup.md`, a checklist
   of what was done by hand on the first machine.
 - One clone per agent, with a service unit per slot. Built: `scripts/fleetwright_slot.py`, `scripts/fleetwright_agent.py`
-  and `systemd/fleetwright-agent@.service`. Not yet run on a real machine: `systemd-analyze verify` and one slot's
-  first run are the operator's.
+  and `systemd/fleetwright-agent@.service`. Run on the first machine.
 - Write-outside-clone hook: block edits outside the agent's own clone. Built in v0.4.0: `hooks/write_guard.py`.
 - Slot and lane allocator: which agent works on what, so two agents never touch the same files. Lanes are
   weighted, and two thirds of the author slots are kept for fix rounds. Reviews are fleet work too, as in
   Marquardt's fleet: review slots (`reviewNN`) review green PRs and post verdicts as `g26work`. Built:
-  `scripts/fleetwright_allocate.py`, `systemd/fleetwright-review@.service` and `systemd/fleetwright-allocate.timer`. Not yet run
-  on a real machine.
+  `scripts/fleetwright_allocate.py`, `systemd/fleetwright-review@.service` and `systemd/fleetwright-allocate.timer`. Run on
+  the first machine.
 - No root to run the fleet: groups `fleetwright-admin` (operators, a `claude` login, the allocator's own user),
   `fleetwright-agent` and `fleetwright-review`; a polkit rule for the fleet's units; the allocator as `fleetwright-allocator`;
   check units and a dry-run unit so admins never read a token; slices per role, no limits yet. Built:
-  `fleetwright_slot.py init`, `scripts/fleetwright_check.py`. Not yet run on a real machine (Ubuntu 26.04).
+  `fleetwright_slot.py init`, `scripts/fleetwright_check.py`. Run on the first machine (Ubuntu 26.04).
 - Each agent's steps in the journal, one line per tool call with its exit code, no tool output, tokens masked.
   Built: `scripts/fleetwright_stream.py`, tested against two recorded runs (`tests/fixtures/stream/`). The watchdog
   can read a stall as "no journal line for N minutes".
 - Watchdog: a timer job with no AI that checks for stalled agents, a red main, stuck PRs and failed units, and
   logs each run as caught, clean or missed. A red main sets the stop flag. Built: `scripts/fleetwright_watchdog.py`,
-  `systemd/fleetwright-watchdog.service` and `systemd/fleetwright-watchdog.timer`. Not yet run on a real machine.
+  `systemd/fleetwright-watchdog.service` and `systemd/fleetwright-watchdog.timer`. Run on the first machine.
 - Stop the line: one switch that halts every agent. Built in v0.4.0: `hooks/stop_line.py` and
   `scripts/fleetwright_stop.py`.
+- Token report without root: `fleetwright-report.service` runs `fleetwright_report.py` over every slot's
+  transcripts for fleetwright-admin. Built in v0.5.0; reading its output fixed in v0.6.0.
+- Dashboard: one terminal with a panel per author, reviewer, the allocator and the watchdog, each showing the
+  unit's state, whether it starts on its own, its assignment, the time of its latest line and its last 5 lines.
+  Built in v0.6.0: `scripts/fleetwright_dash.py` (issue #3).
 
 Decided (2026-11-13): a Linux machine reached over SSH first (one already runs), then a cloud VM; an OS user per
 agent as the boundary, with the hooks for clear refusals; headless `claude -p` under one systemd unit per slot.
@@ -110,19 +114,21 @@ Result (2026-11-15), on the first machine (Ubuntu 26.04, four author slots and o
   about 4,350 against 870, because five of the six PRs changed 2 to 24 lines; the one of ordinary size cost
   1,083 per line. The record is `docs/metrics/` on commitment-tracker-ai's `docs/token-baseline` branch.
 
-Found by running it, and still open:
+Found by running it, all fixed:
 
 - The allocator gave out issue 46 again five seconds after its PR merged, because GitHub's issue listing
   still showed it open. Fixed in 034d6d5: a pass skips an issue whose `issue/<n>` PR merged in the last 30
   minutes.
 - A slot has no git identity, so an agent's first commit fails and it invents one. Fixed: `fleetwright_slot.py add`
-  sets `agentNN (fleet)` and the `--git-email` address in the clone; the existing slots need `add` run again.
+  sets `agentNN (fleet)` and the `--git-email` address in the clone, and the four slots on the machine have it.
+  The address must be the pushing account's noreply form, `<id>+<login>@users.noreply.github.com`, for GitHub to
+  link the commits; the PR for issue 62 was the first with it.
 - Two author agents approved their own pull requests. Fixed in 7f2a6ff and cc-practices 0.8.1; held in the
   run of issues 53 to 56, whose PRs carry verdicts from `g26work` only.
 - After the rename, the slots' cached cc-practices 0.8.1 still wrote the `fleet-verdict` marker, which
   fleetwright 0.5.0 does not read, so `reviewer-verdict` failed on four approved PRs. Fixed on the machine by
   updating cc-practices to 0.9.0 in every slot and clearing those heads from `state.json` for a new review.
-  Updating the kit and the practices plugin together belongs in `docs/vm-setup.md`'s *Updating*.
+  `docs/vm-setup.md`'s *Updating* now updates both plugins on every slot together.
 - The watchdog called main red while any run of a check had failed, even after a newer run of the same check
   passed. Found in the red-main drill; fixed in bd9f80d, which judges each check by its newest run.
 - An agent stopped by the flag leaves its work uncommitted in the clone, and the slot's next run refuses the
@@ -130,6 +136,11 @@ Found by running it, and still open:
   when it is on the same issue's branch and tells the agent so, and stashes it otherwise.
 - A slot's transcripts are readable only by the slot, so `fleetwright_report.py` needed root. Fixed:
   `fleetwright-report.service` runs it for fleetwright-admin with `CAP_DAC_READ_SEARCH` and no network or secrets.
+  Its documented read used the unit's InvocationID, which is empty once a oneshot unit ends; fixed in 1d18685 to
+  read from a journal cursor.
+
+Released as v0.6.0 (2026-11-15); commitment-tracker-ai's repin to it is its PR 64. The reusable workflows it calls
+are unchanged from v0.5.0.
 
 ## Also open
 
