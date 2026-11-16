@@ -17,6 +17,7 @@ from fleetwright_allocate import (
     classify_ci,
     has_done_when,
     in_flight_slots,
+    is_blocked_handoff,
     parse_config,
     plan,
 )
@@ -41,9 +42,10 @@ def issue(
     body: str = DONE,
     labels: tuple[str, ...] | None = None,
     assigned: bool = False,
+    blocked: bool = False,
 ) -> Issue:
     tags = labels if labels is not None else ("agent-ready", f"lane:{lane}")
-    return Issue(n, tags, body, f"2026-11-{n:02d}", assigned)
+    return Issue(n, tags, body, f"2026-11-{n:02d}", assigned, blocked)
 
 
 def pull(
@@ -331,3 +333,48 @@ def test_the_plan_does_not_change_the_state_it_was_given() -> None:
     state = State()
     plan(cfg, free(cfg), [issue(1)], [pull(40, 12)], state, random.Random(1))
     assert state.runs == {} and state.reviewed == {}
+
+
+# --- handoffs -------------------------------------------------------------------------------------
+
+HANDOFF = (
+    "## Handoff\n\n**Status**: {status}\n\n**Done**\n- the parser\n\n"
+    "**Decision needed**\n- {decision}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        HANDOFF.format(status="blocked", decision="which queue? I pick SQS"),
+        HANDOFF.format(status="Blocked", decision="x").replace("## Handoff", "### handoff"),
+        "\r\n\n## Handoff\r\n\r\n**Status:** blocked on the owner\r\n",
+    ],
+)
+def test_a_handoff_whose_status_is_blocked_blocks(body: str) -> None:
+    assert is_blocked_handoff(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        HANDOFF.format(status="partly done", decision="None"),
+        HANDOFF.format(status="done", decision="None"),
+        # the template's placeholder, left as it is
+        HANDOFF.format(status="done | blocked | partly done", decision="None"),
+        "Looks blocked to me.\n\n**Status**: blocked",  # not a handoff
+        "## Notes\n\n## Handoff\n\n**Status**: blocked",  # the handoff heading must come first
+        "",
+    ],
+)
+def test_anything_else_does_not_block(body: str) -> None:
+    assert not is_blocked_handoff(body)
+
+
+def test_an_issue_blocked_on_its_handoff_is_skipped_with_a_note() -> None:
+    cfg = config(lanes={"feature": 1})
+    state = State(runs={3: 1})
+    result = plan(cfg, free(cfg), [issue(3, blocked=True), issue(4)], [], state, random.Random(1))
+    assert assigned(result) == {"agent01": "issue 4"}
+    assert any("#3" in n and "handoff" in n for n in result.notes)
+    assert result.state.runs == {3: 1, 4: 1}  # a blocked issue uses none of its runs

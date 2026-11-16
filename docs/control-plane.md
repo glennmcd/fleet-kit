@@ -293,7 +293,12 @@ Each pass:
    work; within a lane, the oldest issue goes first. An issue whose `issue/<n>` PR merged in the last 30 minutes
    is skipped: GitHub's issue listing can show it open for a few seconds after the merge closed it, and one pass
    gave such an issue out again. The merges are read from the closed PRs sorted by last update, which shows a
-   merge at once.
+   merge at once. An issue the fleet has run before, with no open PR, waits while its last comment is a
+   handoff (cc-practices' `templates/handoff.md`) whose `**Status**` is `blocked`: the run needs the
+   owner, and running it again would only ask again. Any reply on the issue releases it at the next pass, and
+   the next author reads that reply, since it reads the issue with `gh issue view <n> --comments`. A waiting
+   issue uses none of its runs. A `partly done` handoff, which an agent at its context ceiling leaves, goes
+   out again as usual. Only those issues' comments are read, one call each.
 5. Fills author slots. Two thirds of them (`in_flight_share`, counting slots already on a fix round) are kept
    for fix rounds and the rest for new issues; a share left unused goes to the other kind.
 6. Writes `/var/lib/fleetwright/slots/<slot>` and starts the slot's unit.
@@ -330,6 +335,126 @@ gh label create agent-ready --description "An agent can pick this up: it has a D
 gh label create lane:feature
 gh label create lane:fix
 gh label create lane:tooling
+```
+
+## How work moves
+
+Everything the fleet knows about a piece of work is on GitHub: the issue, its `issue/<n>` branch, the pull
+request, its checks and its comments. Apart from that, only the slot files and `state.json` (run counts and
+reviewed heads) are kept, on the machine. No step talks to the next one directly. Each actor changes GitHub,
+and the next allocator pass reads the result and decides who acts next.
+
+| Actor | Acts on | What it does |
+|---|---|---|
+| Owner (a person) | issues, PRs, the fleet | writes an issue with a *Done when* list, adds `agent-ready` and a `lane:` label; answers a blocked handoff; merges an approved PR (or lets auto-merge do it); takes over work that is past its run cap, unreviewed or held by a failed unit |
+| Allocator | slot files, units | every 2 minutes: reads GitHub and the units, writes `slots/<slot>`, starts the units, counts runs. It writes nothing to GitHub |
+| Author slot (`agentNN`) | the branch, the PR, comments | `issue <n>`: works on `issue/<n>`, pushes and opens or continues the PR. `fix <n>`: fixes failing checks, a conflict or requested changes and pushes again. When it cannot finish, it posts a handoff on the issue or PR |
+| Reviewer slot (`reviewNN`) | the PR's comments | `review <pr>`: reviews the head commit and posts a verdict, `approve` or `request_changes`, as the reviewer's account |
+| CI | the PR's checks | runs the checks on each head. `reviewer-verdict` turns green only on an approval at the head |
+| Watchdog | the stop flag, the journal | reports failed units, stalled slots and stuck PRs; sets the stop flag when main is red |
+
+### An issue
+
+```mermaid
+stateDiagram-v2
+    state "Not ready" as NotReady
+    state "Ready" as Ready
+    state "Author run" as Run
+    state "Blocked on the owner" as Blocked
+    state "Held by a failed unit" as Held
+    state "Past its run cap" as Capped
+    state "Has an open PR" as InPR
+    state "Closed" as Closed
+
+    [*] --> NotReady : owner opens it
+    NotReady --> Ready : owner adds agent-ready, a lane label and a Done when list
+    Ready --> Run : allocator assigns issue n (a run is counted)
+    Run --> InPR : author pushes issue/n and opens the PR
+    Run --> Ready : run ends with no PR (partly done handoff, or none)
+    Run --> Blocked : run ends with a blocked handoff as the last comment
+    Blocked --> Ready : anyone replies on the issue
+    Run --> Held : the unit fails
+    Held --> Ready : owner looks, then runs systemctl reset-failed
+    Ready --> Capped : max_runs_per_issue reached
+    Capped --> [*] : owner takes it over
+    InPR --> Closed : the PR merges and closes the issue
+    InPR --> Ready : the PR is closed without merging
+    Closed --> [*]
+```
+
+An issue that a person is assigned to, or that lacks its labels or a filled-in *Done when* list, stays
+*Not ready*. The pass notes why it skipped each one. *Ready* covers an issue that has never run as well as one
+a run left without a PR; the next author starts from the pushed `issue/<n>` branch and the issue's comments.
+While a PR is open, the PR's own state decides what happens next:
+
+### A pull request
+
+```mermaid
+stateDiagram-v2
+    state "Draft" as Draft
+    state "Checks running" as Running
+    state "Green, no verdict" as Green
+    state "In review" as Review
+    state "Approved" as Approved
+    state "Red: checks failed or conflict" as Red
+    state "Changes requested" as Changes
+    state "Fix round" as Fix
+    state "Waits for a person" as Person
+    state "Merged" as Merged
+
+    [*] --> Running : author opens the PR
+    [*] --> Draft : author opens it as a draft
+    Draft --> Running : marked ready for review
+    Running --> Green : checks pass
+    Running --> Red : a check fails, or main conflicts
+    Green --> Review : allocator assigns review pr to a review slot
+    Review --> Approved : reviewer posts approve at the head
+    Review --> Changes : reviewer posts request_changes at the head
+    Review --> Person : the review posts no verdict (a head is reviewed once)
+    Red --> Fix : allocator assigns fix n (a run is counted)
+    Changes --> Fix : allocator assigns fix n (a run is counted)
+    Red --> Person : the issue is past its run cap
+    Changes --> Person : the issue is past its run cap
+    Fix --> Running : author pushes a new head
+    Fix --> Red : the run ends without fixing it
+    Approved --> Merged : owner or auto-merge merges once the required checks pass
+    Approved --> Red : main moves on and conflicts
+    Merged --> [*]
+```
+
+A verdict counts only at the head commit it names, so every push in a fix round starts the PR again from
+*Checks running*, and the new head needs a review of its own. A red PR is never reviewed. A draft keeps its
+issue in flight but gets no fix round or review. A blocked handoff on a PR does not hold it back: a PR that
+is red or has changes requested still gets fix rounds until its run cap.
+
+### One issue, start to finish
+
+```mermaid
+sequenceDiagram
+    actor Owner
+    participant GH as GitHub
+    participant Alloc as Allocator
+    participant Author as Author slot
+    participant CI
+    participant Rev as Reviewer slot
+
+    Owner->>GH: issue with Done when, agent-ready, lane label
+    Alloc->>GH: pass: read issues, PRs, checks, comments
+    Alloc->>Author: slots/agent01 = issue 12, start the unit
+    Author->>GH: push issue/12, open the PR
+    Author->>GH: or post a handoff and end
+    GH->>CI: run the checks on the head
+    CI->>GH: checks green
+    Alloc->>Rev: slots/review01 = review 40, start the unit
+    Rev->>GH: verdict at the head: request_changes
+    Alloc->>Author: slots/agent02 = fix 12
+    Author->>GH: push a new head
+    CI->>GH: checks green
+    Alloc->>Rev: review 40 (new head)
+    Rev->>GH: verdict at the head: approve
+    CI->>GH: reviewer-verdict green
+    Owner->>GH: merge (or auto-merge)
+    GH->>GH: the PR closes issue 12
 ```
 
 ## The watchdog

@@ -434,3 +434,53 @@ def test_a_corrupt_state_file_ends_the_pass_cleanly(fleet: Path) -> None:
     systemd = FakeSystemd()
     assert run(fleet, FakeGitHub(issues=[issue(3)]), systemd) == 1
     assert systemd.started == []
+
+
+# --- handoffs -------------------------------------------------------------------------------------
+
+BLOCKED = "## Handoff\n\n**Status**: blocked\n\n**Decision needed**\n- which queue? I pick SQS\n"
+PARTLY = "## Handoff\n\n**Status**: partly done\n\n**Decision needed**\n- None\n"
+
+
+def ran_before(fleet: Path, *issues: int) -> None:
+    runs = {str(n): 1 for n in issues}
+    (fleet / "state.json").write_text(json.dumps({"runs": runs, "reviewed": {}}), encoding="utf-8")
+
+
+def test_an_issue_whose_last_comment_is_a_blocked_handoff_waits(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran_before(fleet, 3)
+    gh = FakeGitHub(
+        issues=[issue(3), issue(4)],
+        comments={3: [comment(1, "fleet-bot", PARTLY), comment(2, "fleet-bot", BLOCKED)]},
+    )
+    assert run(fleet, gh, FakeSystemd()) == 0
+    assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 4\n"
+    assert not (fleet / "slots" / "agent02").exists()
+    assert "#3" in capsys.readouterr().out
+
+
+def test_a_reply_after_the_blocked_handoff_releases_the_issue(fleet: Path) -> None:
+    ran_before(fleet, 3)
+    gh = FakeGitHub(
+        issues=[issue(3)],
+        comments={3: [comment(1, "fleet-bot", BLOCKED), comment(2, "owner", "Use SQS.")]},
+    )
+    run(fleet, gh, FakeSystemd())
+    assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 3\n"
+
+
+def test_a_partly_done_handoff_goes_out_again(fleet: Path) -> None:
+    ran_before(fleet, 3)
+    gh = FakeGitHub(issues=[issue(3)], comments={3: [comment(1, "fleet-bot", PARTLY)]})
+    run(fleet, gh, FakeSystemd())
+    assert (fleet / "slots" / "agent01").read_text(encoding="utf-8") == "issue 3\n"
+
+
+def test_handoffs_are_read_only_for_issues_the_fleet_ran_with_no_open_pr(fleet: Path) -> None:
+    ran_before(fleet, 3, 5)
+    gh = FakeGitHub(issues=[issue(3), issue(4), issue(5)], pulls=[pr(40, 5, checks="FAILURE")])
+    run(fleet, gh, FakeSystemd())
+    read = [c[-1] for c in gh.calls if c[-1].endswith("/comments")]
+    assert read == [f"repos/{REPO}/issues/3/comments"]

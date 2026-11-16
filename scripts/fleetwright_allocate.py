@@ -15,8 +15,10 @@ There are three kinds of work, all read from GitHub:
 - fix: such a pull request with failing checks, a merge conflict, or a ``request_changes`` verdict at its head.
 - issue: an open issue labelled ``agent-ready`` and ``lane:<name>``, with a filled-in *Done when* list, no
   assignee, no open pull request and no pull request merged in the last ``MERGE_WINDOW`` seconds (GitHub's issue
-  listing can show an issue open for a few seconds after its pull request closed it). The lane is drawn by
-  weight among the lanes that have work; within a lane the oldest issue goes first.
+  listing can show an issue open for a few seconds after its pull request closed it). An issue the fleet has
+  run, with no open pull request, waits while its last comment is a handoff whose status is blocked: a reply
+  on the issue releases it. The lane is drawn by weight among the lanes that have work; within a lane the
+  oldest issue goes first.
 
 Author slots (``agentNN``) take fix rounds and new issues. Two thirds of them (``in_flight_share``) are kept for
 fix rounds, counting the slots already busy with one; a share left unused goes to the other kind, so no slot
@@ -51,7 +53,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,8 @@ GOOD = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 DONE_HEADING = re.compile(r"^#{1,6}\s*done when\s*$", re.IGNORECASE)
 CHECKBOX = re.compile(r"^\s*[-*+]\s+\[[ xX]\]\s+\S")
 HEADING = re.compile(r"^#{1,6}\s")
+HANDOFF_HEADING = re.compile(r"^#{1,6}\s*handoff\s*$", re.IGNORECASE)
+HANDOFF_STATUS = re.compile(r"^\s*\*\*status:?\*\*:?\s*(.*)$", re.IGNORECASE)
 
 
 # --- the model ----------------------------------------------------------------------------------
@@ -95,6 +99,7 @@ class Issue:
     body: str
     created_at: str
     assigned: bool = False
+    blocked: bool = False  # its last comment is a handoff that waits for the owner
 
 
 @dataclass(frozen=True)
@@ -213,6 +218,22 @@ def has_done_when(body: str) -> bool:
     return False
 
 
+def is_blocked_handoff(body: str) -> bool:
+    """True for a handoff comment (cc-practices' ``templates/handoff.md``) whose status is blocked.
+
+    The handoff heading must be the comment's first line, and the status must start with "blocked": the
+    template's own placeholder, ``done | blocked | partly done``, does not count.
+    """
+    lines = [ln.strip() for ln in body.replace("\r\n", "\n").split("\n") if ln.strip()]
+    if not lines or not HANDOFF_HEADING.match(lines[0]):
+        return False
+    for line in lines[1:]:
+        m = HANDOFF_STATUS.match(line)
+        if m:
+            return m.group(1).strip().lower().startswith("blocked")
+    return False
+
+
 def classify_ci(checks: Sequence[dict[str, Any]]) -> str:
     """ "fail", "running" or "pass" for a PR's checks, the reviewer's own check left out."""
     states: list[str] = []
@@ -323,6 +344,8 @@ def plan(
             if i.assigned
             else "has no filled-in Done when list"
             if not has_done_when(i.body)
+            else "is blocked on its last handoff until someone replies"
+            if i.blocked
             else f"has had {cfg.max_runs} runs"
             if state.runs.get(i.number, 0) >= cfg.max_runs
             else ""
@@ -493,9 +516,8 @@ def fetch_issues(cfg: Config, gh: Gh) -> list[Issue]:
     ]
 
 
-def verdict_at_head(
-    repo: str, number: int, head_sha: str, reviewers: list[str], gh: Gh
-) -> str | None:
+def fetch_comments(repo: str, number: int, gh: Gh) -> list[Comment]:
+    """Every comment on an issue or pull request, oldest first."""
     pages = json.loads(
         gh(["api", "--paginate", "--slurp", f"repos/{repo}/issues/{number}/comments"])
     )
@@ -510,6 +532,32 @@ def verdict_at_head(
         for page in pages
         for c in page
     ]
+    return sorted(comments, key=lambda c: (c.created_at, c.id))
+
+
+def mark_blocked(
+    cfg: Config, issues: Sequence[Issue], pulls: Sequence[Pull], state: State, gh: Gh
+) -> list[Issue]:
+    """Flag the issues whose last comment is a blocked handoff.
+
+    Only an issue the fleet has run and that has no open pull request can hold such a handoff where the
+    next run would start from it, so only those are read: one call each, not one per ready issue.
+    """
+    in_flight = {p.issue for p in pulls}
+    out: list[Issue] = []
+    for i in issues:
+        if state.runs.get(i.number, 0) > 0 and i.number not in in_flight:
+            comments = fetch_comments(cfg.repo, i.number, gh)
+            if comments and is_blocked_handoff(comments[-1].body):
+                i = replace(i, blocked=True)
+        out.append(i)
+    return out
+
+
+def verdict_at_head(
+    repo: str, number: int, head_sha: str, reviewers: list[str], gh: Gh
+) -> str | None:
+    comments = fetch_comments(repo, number, gh)
     title = decide(head_sha, comments, reviewers=reviewers).title
     return {"Approved": "approve", "Changes requested": "request_changes"}.get(title)
 
@@ -657,7 +705,7 @@ def run_pass(
     reviewers = fetch_reviewers(cfg.repo, gh)
     pulls = fetch_pulls(cfg, reviewers, gh)
     merged = fetch_merged(cfg, gh, now)  # before the issues, so a merge between the reads is seen
-    issues = fetch_issues(cfg, gh)
+    issues = mark_blocked(cfg, fetch_issues(cfg, gh), pulls, state, gh)
 
     finished = [s for s in slots if s.state == "free" and s.assignment]
     for s in finished:
