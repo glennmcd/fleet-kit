@@ -49,6 +49,8 @@ files = [
   "scripts/fleetwright_check.py",
   "scripts/fleetwright_watchdog.py",
   "tests/test_fleetwright_watchdog.py",
+  "scripts/fleetwright_dash.py",
+  "tests/test_fleetwright_dash.py",
   "scripts/fleetwright_stream.py",
   "tests/test_fleetwright_stream.py",
   "tests/test_fleetwright_check.py",
@@ -79,3 +81,4 @@ mypy_path = "scripts:hooks"
 "scripts/fleetwright_check.py" = ["E501"]
 "scripts/fleetwright_watchdog.py" = ["E501"]
 "scripts/fleetwright_stream.py" = ["E501"]
+"scripts/fleetwright_dash.py" = ["E501"]

@@ -380,6 +380,21 @@ A long command is not a stall: the `wait_cap` hook holds an agent's waits to abo
 `stall_minutes`. An approved pull request that nobody merges for two hours is reported as stuck on every
 run until it is merged; raise `stuck_pr_minutes` if that is noise.
 
+## The dashboard
+
+[`scripts/fleetwright_dash.py`](../scripts/fleetwright_dash.py) shows the whole fleet in one terminal: a panel
+per author, per reviewer, the allocator and the watchdog, each with the unit's state, the slot's assignment and
+its latest 5 journal lines as they arrive. A failed unit is marked FAILED. `q` quits.
+
+```bash
+uv run --script /opt/fleetwright/scripts/fleetwright_dash.py      # as a member of fleetwright-admin
+```
+
+It only reads: the journal (the `systemd-journal` group), `systemctl is-active` and `/var/lib/fleetwright/slots`.
+It never reads `/etc/fleetwright`, so it finds the slots from the journal, and a slot that has never logged has
+no panel until it does. systemd's routine lines about a unit starting and ending are left out so the unit's own
+lines show; its lines about failures and signals stay.
+
 ## The token report
 
 [`scripts/fleetwright_report.py`](../scripts/fleetwright_report.py) measures tokens per week, per branch and per merged
