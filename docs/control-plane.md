@@ -367,18 +367,18 @@ stateDiagram-v2
     state "Closed" as Closed
 
     [*] --> NotReady : owner opens it
-    NotReady --> Ready : owner adds agent-ready, a lane label and a Done when list
-    Ready --> Run : allocator assigns issue n (a run is counted)
-    Run --> InPR : author pushes issue/n and opens the PR
-    Run --> Ready : run ends with no PR (partly done handoff, or none)
-    Run --> Blocked : run ends with a blocked handoff as the last comment
-    Blocked --> Ready : anyone replies on the issue
+    NotReady --> Ready : owner adds<br>agent-ready, a<br>lane label and a<br>Done when list
+    Ready --> Run : allocator<br>assigns issue n<br>(a run is<br>counted)
+    Run --> InPR : author pushes<br>issue/n and<br>opens the PR
+    Run --> Ready : run ends with<br>no PR (partly<br>done handoff,<br>or none)
+    Run --> Blocked : run ends with a<br>blocked handoff<br>as the last<br>comment
+    Blocked --> Ready : anyone replies<br>on the issue
     Run --> Held : the unit fails
-    Held --> Ready : owner looks, then runs systemctl reset-failed
-    Ready --> Capped : max_runs_per_issue reached
-    Capped --> [*] : owner takes it over
-    InPR --> Closed : the PR merges and closes the issue
-    InPR --> Ready : the PR is closed without merging
+    Held --> Ready : owner looks,<br>then runs<br>systemctl<br>reset-failed
+    Ready --> Capped : max_runs_per_issue<br>reached
+    Capped --> [*] : owner takes it<br>over
+    InPR --> Closed : the PR merges<br>and closes the<br>issue
+    InPR --> Ready : the PR is closed<br>without merging
     Closed --> [*]
 ```
 
@@ -402,23 +402,23 @@ stateDiagram-v2
     state "Waits for a person" as Person
     state "Merged" as Merged
 
-    [*] --> Running : author opens the PR
-    [*] --> Draft : author opens it as a draft
-    Draft --> Running : marked ready for review
+    [*] --> Running : author opens<br>the PR
+    [*] --> Draft : author opens it<br>as a draft
+    Draft --> Running : marked ready<br>for review
     Running --> Green : checks pass
-    Running --> Red : a check fails, or main conflicts
-    Green --> Review : allocator assigns review pr to a review slot
-    Review --> Approved : reviewer posts approve at the head
-    Review --> Changes : reviewer posts request_changes at the head
-    Review --> Person : the review posts no verdict (a head is reviewed once)
-    Red --> Fix : allocator assigns fix n (a run is counted)
-    Changes --> Fix : allocator assigns fix n (a run is counted)
-    Red --> Person : the issue is past its run cap
-    Changes --> Person : the issue is past its run cap
-    Fix --> Running : author pushes a new head
-    Fix --> Red : the run ends without fixing it
-    Approved --> Merged : owner or auto-merge merges once the required checks pass
-    Approved --> Red : main moves on and conflicts
+    Running --> Red : a check fails,<br>or main<br>conflicts
+    Green --> Review : allocator<br>assigns review<br>pr to a review<br>slot
+    Review --> Approved : reviewer posts<br>approve at the<br>head
+    Review --> Changes : reviewer posts<br>request_changes<br>at the head
+    Review --> Person : the review<br>posts no<br>verdict (a head<br>is reviewed<br>once)
+    Red --> Fix : allocator<br>assigns fix n<br>(a run is<br>counted)
+    Changes --> Fix : allocator<br>assigns fix n<br>(a run is<br>counted)
+    Red --> Person : the issue is<br>past its run<br>cap
+    Changes --> Person : the issue is<br>past its run<br>cap
+    Fix --> Running : author pushes<br>a new head
+    Fix --> Red : the run ends<br>without fixing<br>it
+    Approved --> Merged : owner or<br>auto-merge<br>merges once the<br>required checks<br>pass
+    Approved --> Red : main moves on<br>and conflicts
     Merged --> [*]
 ```
 
