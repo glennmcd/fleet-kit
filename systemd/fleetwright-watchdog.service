@@ -17,10 +17,15 @@ UMask=0002
 LoadCredential=fleetwright.json:/etc/fleetwright/fleetwright.json
 Environment=FLEETWRIGHT_CONFIG=%d/fleetwright.json
 Environment=GH_NO_UPDATE_NOTIFIER=1
-Environment=PATH=/var/lib/fleetwright-allocator/.local/bin:/usr/local/bin:/usr/bin:/bin
-# It only reads GitHub: allocator.env's read-only token replaces the authors' when it is there.
-EnvironmentFile=/etc/fleetwright/agent.env
-EnvironmentFile=-/etc/fleetwright/allocator.env
+Environment=PATH=/opt/fleetwright/bin:/var/lib/fleetwright-allocator/.local/bin:/usr/local/bin:/usr/bin:/bin
+# It only reads GitHub, so its token can only read.
+# Its GitHub App token (read), readable by its user alone: minted as root ('+') before the unit
+# starts, the unit ends well inside the token's hour, revoked when it stops (scripts/fleetwright_token.py).
+RuntimeDirectory=fleetwright/watchdog
+RuntimeDirectoryMode=0700
+Environment=FLEETWRIGHT_TOKEN_FILE=/run/fleetwright/watchdog/gh-token
+ExecStartPre=+/usr/bin/python3 /opt/fleetwright/scripts/fleetwright_token.py mint --mode read --dir /run/fleetwright/watchdog --owner fleetwright-allocator --unit fleetwright-watchdog
+ExecStopPost=+/usr/bin/python3 /opt/fleetwright/scripts/fleetwright_token.py revoke --dir /run/fleetwright/watchdog --unit fleetwright-watchdog
 ExecStart=/usr/bin/env uv run --script /opt/fleetwright/scripts/fleetwright_watchdog.py
 TimeoutStartSec=5min
 NoNewPrivileges=yes

@@ -15,11 +15,19 @@ Environment=FLEETWRIGHT_ROLE=author
 Environment=FLEETWRIGHT_CLONE=/home/%i/repo
 Environment=CC_PRACTICES_UNATTENDED=1
 Environment=GH_NO_UPDATE_NOTIFIER=1
-Environment=PATH=/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
+# /opt/fleetwright/bin first: its gh reads the token file at each call, so a renewed token takes effect.
+Environment=PATH=/opt/fleetwright/bin:/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Beside the clone, what the write guard allows; the sandbox allows the same (managed-settings.json).
 Environment=FLEETWRIGHT_ALLOW_WRITE=/home/%i/.cache:/home/%i/.local/share/uv:/home/%i/.bun
-# Secrets (the model key, the GitHub token). Owned by root, mode 600; never in this file.
+# The model key. Owned by root, mode 600; never in this file. GitHub is the App's token below.
 EnvironmentFile=/etc/fleetwright/agent.env
+# Its GitHub App token (write), readable by its user alone: minted as root ('+') before the unit
+# starts, renewed by fleetwright-token-refresh.timer while the unit runs, revoked when it stops (scripts/fleetwright_token.py).
+RuntimeDirectory=fleetwright/%i
+RuntimeDirectoryMode=0700
+Environment=FLEETWRIGHT_TOKEN_FILE=/run/fleetwright/%i/gh-token
+ExecStartPre=+/usr/bin/python3 /opt/fleetwright/scripts/fleetwright_token.py mint --mode write --dir /run/fleetwright/%i --owner %i --slot %i
+ExecStopPost=+/usr/bin/python3 /opt/fleetwright/scripts/fleetwright_token.py revoke --dir /run/fleetwright/%i --slot %i
 ExecStart=/usr/bin/env uv run --script /opt/fleetwright/scripts/fleetwright_agent.py
 # One run per assignment: the allocator starts the unit again, not systemd.
 Restart=no

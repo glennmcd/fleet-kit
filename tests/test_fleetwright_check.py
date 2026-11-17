@@ -12,6 +12,22 @@ from fleetwright_slot import managed_settings
 
 MANAGED = "/etc/claude-code/managed-settings.json"
 TOKEN = "ghp_secretsecretsecret"
+APP_TOKEN = "/run/fleetwright/check-agent01/gh-token"
+APP_RECORD = "/run/fleetwright/check-agent01/gh-token.json"
+APP_RECORD_TEXT = {
+    "id": "sha256:3f9a1c07be42",
+    "expires_at": "2027-01-15T09:00:00Z",
+    "permissions": {
+        "contents": "write",
+        "pull_requests": "write",
+        "issues": "write",
+        "actions": "read",
+        "checks": "read",
+        "statuses": "read",
+        "metadata": "read",
+    },
+    "repositories": ["glennmcd/commitment-tracker-ai"],
+}
 KEY = "sk-ant-secretsecret"
 CLONE = "/home/review01/repo"
 
@@ -26,13 +42,18 @@ class Fake:
             "FLEETWRIGHT_ROLE": role,
             "FLEETWRIGHT_CLONE": f"/home/{slot}/repo",
             "CC_PRACTICES_UNATTENDED": "1",
-            "GH_TOKEN": TOKEN,
             "ANTHROPIC_API_KEY": KEY,
         }
+        self.files = {MANAGED: managed_settings()}
         if role == "review":
             self.env["FLEETWRIGHT_REVIEWER_LOGIN"] = "g26work"
+            self.env["GH_TOKEN"] = TOKEN
+        else:
+            # An author's GitHub access is the App token its check unit minted, never GH_TOKEN.
+            self.env["FLEETWRIGHT_TOKEN_FILE"] = APP_TOKEN
+            self.files[APP_RECORD] = json.dumps(APP_RECORD_TEXT)
+        self.app_repos: str | None = "glennmcd/commitment-tracker-ai\n"
         self.tools = {"uv", "claude", "gh", "git", "rtk", "bwrap", "socat"}
-        self.files = {MANAGED: managed_settings()}
         self.owners: dict[str, int] = {}  # uid by path; root unless named
         self.modes: dict[str, int] = {}  # mode by path; the home's mode unless named
         self.bwrap_ok = True
@@ -60,6 +81,8 @@ class Fake:
             return 0, flags
         if command[:3] == ["gh", "api", "user"]:
             return (0, self.login + "\n") if self.login else (1, "")
+        if command[:3] == ["gh", "api", "installation/repositories"]:
+            return (0, self.app_repos) if self.app_repos is not None else (1, "")
         if "remote" in command:
             return 0, "https://github.com/glennmcd/commitment-tracker-ai.git\n"
         if "status" in command:
@@ -100,6 +123,72 @@ def test_a_ready_review_slot_passes_every_check() -> None:
 def test_a_ready_author_slot_passes_and_needs_no_reviewer_login() -> None:
     got = results(Fake("author"))
     assert all(ok for ok, _ in got.values()), got
+
+
+# --- an author's GitHub App token -----------------------------------------------------------------
+
+
+def test_an_author_slot_reports_its_app_token_and_never_asks_for_a_user() -> None:
+    fake = Fake("author")
+    ok, detail = results(fake)["github"]
+    assert ok
+    assert detail == (
+        "App token for glennmcd/commitment-tracker-ai: contents write, no administration or "
+        "workflows, expires 2027-01-15T09:00:00Z"
+    )
+    # An installation token cannot call GET /user; the check must not need it.
+    assert not any(c[:3] == ["gh", "api", "user"] for c in fake.ran)
+    assert [
+        "gh",
+        "api",
+        "installation/repositories",
+        "--jq",
+        ".repositories[].full_name",
+    ] in fake.ran
+
+
+def test_an_author_unit_that_mints_no_token_fails() -> None:
+    fake = Fake("author")
+    del fake.env["FLEETWRIGHT_TOKEN_FILE"]
+    ok, detail = results(fake)["github"]
+    assert not ok and "FLEETWRIGHT_TOKEN_FILE" in detail
+
+
+def test_a_mint_that_failed_points_at_the_token_log() -> None:
+    fake = Fake("author")
+    del fake.files[APP_RECORD]
+    ok, detail = results(fake)["github"]
+    assert not ok and "journalctl -t fleetwright-token" in detail
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        {**APP_RECORD_TEXT["permissions"], "administration": "write"},  # type: ignore[dict-item]
+        {**APP_RECORD_TEXT["permissions"], "workflows": "write"},  # type: ignore[dict-item]
+        {**APP_RECORD_TEXT["permissions"], "contents": "read"},  # type: ignore[dict-item]
+    ],
+)
+def test_an_app_token_that_can_change_the_rules_or_cannot_push_fails(
+    permissions: dict[str, str],
+) -> None:
+    fake = Fake("author")
+    fake.files[APP_RECORD] = json.dumps({**APP_RECORD_TEXT, "permissions": permissions})
+    assert not results(fake)["github"][0]
+
+
+def test_an_app_token_github_refuses_fails() -> None:
+    fake = Fake("author")
+    fake.app_repos = None
+    ok, detail = results(fake)["github"]
+    assert not ok and "refused" in detail
+
+
+def test_an_app_not_installed_on_the_clones_repository_fails() -> None:
+    fake = Fake("author")
+    fake.app_repos = "glennmcd/other-repo\n"
+    ok, detail = results(fake)["github"]
+    assert not ok and "glennmcd/commitment-tracker-ai" in detail
 
 
 def test_a_reviewer_signed_in_as_anyone_else_fails() -> None:

@@ -18,11 +18,15 @@ UMask=0002
 LoadCredential=fleetwright.json:/etc/fleetwright/fleetwright.json
 Environment=FLEETWRIGHT_CONFIG=%d/fleetwright.json
 Environment=GH_NO_UPDATE_NOTIFIER=1
-Environment=PATH=/var/lib/fleetwright-allocator/.local/bin:/usr/local/bin:/usr/bin:/bin
-# It only reads GitHub, but without allocator.env it holds the authors' token, which can write. Put a
-# read-only token there (GH_TOKEN=...) so a bug in the allocator cannot change the repository.
-EnvironmentFile=/etc/fleetwright/agent.env
-EnvironmentFile=-/etc/fleetwright/allocator.env
+Environment=PATH=/opt/fleetwright/bin:/var/lib/fleetwright-allocator/.local/bin:/usr/local/bin:/usr/bin:/bin
+# It only reads GitHub, so its token can only read: a bug in the allocator cannot change the repository.
+# Its GitHub App token (read), readable by its user alone: minted as root ('+') before the unit
+# starts, the unit ends well inside the token's hour, revoked when it stops (scripts/fleetwright_token.py).
+RuntimeDirectory=fleetwright/allocate
+RuntimeDirectoryMode=0700
+Environment=FLEETWRIGHT_TOKEN_FILE=/run/fleetwright/allocate/gh-token
+ExecStartPre=+/usr/bin/python3 /opt/fleetwright/scripts/fleetwright_token.py mint --mode read --dir /run/fleetwright/allocate --owner fleetwright-allocator --unit fleetwright-allocate
+ExecStopPost=+/usr/bin/python3 /opt/fleetwright/scripts/fleetwright_token.py revoke --dir /run/fleetwright/allocate --unit fleetwright-allocate
 ExecStart=/usr/bin/env uv run --script /opt/fleetwright/scripts/fleetwright_allocate.py
 # A hung gh call must not hold the lock and stop every later pass.
 TimeoutStartSec=5min

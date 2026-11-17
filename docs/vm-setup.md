@@ -150,15 +150,14 @@ sudo git clone <the cc-practices repository> /opt/cc-practices-plugin
 
 ```bash
 sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py init --admin <you> --apply
-sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py add agent01 --repo https://github.com/<owner>/<name>.git --git-email <id>+<login>@users.noreply.github.com --apply
+sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py add agent01 --repo https://github.com/<owner>/<name>.git --git-email '<id>+<app>[bot]@users.noreply.github.com' --apply
 sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py add review01 --repo https://github.com/<owner>/<name>.git --apply
 ```
 
 `init` creates the groups, the allocator's user, the `claude` login, `/var/lib/fleetwright`, the units, the polkit
 rule, the sshd file and Claude Code's managed settings (`/etc/claude-code/managed-settings.json`: the sandbox, and
 the stop switch and write guard from `/opt/fleetwright`; [control-plane.md](control-plane.md#claude-codes-sandbox)). `add` creates one slot's user and clone. An author slot also needs `--git-email`, the
-noreply address of the account whose token pushes, and commits as `agentNN (fleet)` at it. Print the address
-with that account's token: `gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"'`. Log in again to get the `fleetwright-admin` group.
+noreply address of the GitHub App's bot (step 4), and commits as `agentNN (fleet)` at it. Log in again to get the `fleetwright-admin` group.
 
 ## 4. Secrets and the config
 
@@ -166,10 +165,43 @@ Written by hand, owned by root, mode 600, in `/etc/fleetwright` (mode 700). No a
 
 | File | Holds | Read by |
 |---|---|---|
-| `agent.env` | the model key (`ANTHROPIC_API_KEY`) and the authors' `GH_TOKEN` | every unit |
+| `agent.env` | the model key (`ANTHROPIC_API_KEY`), and nothing else | every slot |
 | `reviewer.env` | the reviewer account's `GH_TOKEN` and `FLEETWRIGHT_REVIEWER_LOGIN` | review slots only |
-| `allocator.env` | a read-only `GH_TOKEN` (optional) | the allocator and the watchdog |
+| `app.pem` | the authors' GitHub App's private key | `fleetwright_token.py`, as root, when a unit starts |
+| `app.env` | the App's `FLEETWRIGHT_APP_CLIENT_ID`, `FLEETWRIGHT_APP_REPO` and `FLEETWRIGHT_APP_INSTALLATION_ID` | the same |
 | `fleetwright.json` | the repository, the slots and the lanes | the allocator and the watchdog, through `LoadCredential` |
+
+### The authors' GitHub App
+
+The author slots, the allocator and the watchdog use a GitHub App installed on the one repository
+([control-plane.md](control-plane.md#the-authors-github-app)). Create it once, in a browser, signed in as the
+repository's owner:
+
+1. Open <https://github.com/settings/apps/new>. **Name:** for example `g26work-fleet-authors` (unique on GitHub,
+   at most 34 characters). **Homepage URL:** the fleetwright repository. **Webhook:** clear **Active**.
+2. **Repository permissions:** Contents, Pull requests and Issues **Read and write**; Actions, Checks and Commit
+   statuses **Read-only**; Metadata stays Read-only. Leave everything else, **Workflows** and **Administration**
+   included, at **No access**, and every account permission too.
+3. **Where can this GitHub App be installed?** **Only on this account.** Create it, and note its **Client ID**.
+4. **Private keys** > **Generate a private key**. The browser downloads a `.pem`: the App's only credential.
+5. **Install App** > **Only select repositories** > the consumer repository.
+
+Put the key on the machine and remove every other copy:
+
+```bash
+scp ~/Downloads/<app>.*.private-key.pem fleet:app.pem && shred -u ~/Downloads/<app>.*.private-key.pem   # from your desktop
+sudo install -m 600 -o root -g root ~/app.pem /etc/fleetwright/app.pem && shred -u ~/app.pem             # on the machine
+sudo install -m 600 -o root -g root /dev/null /etc/fleetwright/app.env
+sudoedit /etc/fleetwright/app.env    # FLEETWRIGHT_APP_CLIENT_ID=Iv23... and FLEETWRIGHT_APP_REPO=<owner>/<name>
+sudo python3 /opt/fleetwright/scripts/fleetwright_token.py installation    # prints the installation id
+sudoedit /etc/fleetwright/app.env    # add FLEETWRIGHT_APP_INSTALLATION_ID=<that id>
+```
+
+The address author slots commit at, for `add --git-email` in step 3:
+
+```bash
+gh api 'users/<app>%5Bbot%5D' --jq '"\(.id)+\(.login)@users.noreply.github.com"'
+```
 
 `fleetwright.json` lists the slots the allocator may use, so a slot that is not listed gets no work:
 
@@ -205,7 +237,7 @@ session starts with.
 systemctl start fleetwright-check-agent@agent01 && journalctl -u fleetwright-check-agent@agent01 -o cat -n 20
 systemctl start fleetwright-check-review@review01 && journalctl -u fleetwright-check-review@review01 -o cat -n 20
 systemctl start fleetwright-allocate-dry-run && journalctl -u fleetwright-allocate-dry-run -o cat -n 50
-sudo systemctl enable --now fleetwright-allocate.timer fleetwright-watchdog.timer
+sudo systemctl enable --now fleetwright-token-refresh.timer fleetwright-allocate.timer fleetwright-watchdog.timer
 ```
 
 The first three need only `fleetwright-admin`. Each check must end with `every check passed`.
@@ -239,7 +271,7 @@ directories are kept. Enable any new timer afterwards (step 6).
 ## Adding a slot
 
 ```bash
-sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py add agent03 --repo https://github.com/<owner>/<name>.git --git-email <id>+<login>@users.noreply.github.com --apply
+sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py add agent03 --repo https://github.com/<owner>/<name>.git --git-email '<id>+<app>[bot]@users.noreply.github.com' --apply
 ```
 
 Then step 5 for the new slot, its check from step 6, and its name in `/etc/fleetwright/fleetwright.json`. The allocator

@@ -27,7 +27,7 @@ A slot is an OS user whose home holds one clone, ``/home/<slot>/repo``. The user
 write its home and nothing else. ``agentNN`` slots are authors: they work on issues and fix rounds.
 ``reviewNN`` slots are reviewers: they review pull requests and post verdicts as the reviewer's own GitHub
 account. An author slot commits in its clone as ``agentNN (fleet)`` at the address given with
-``--git-email``: the noreply address of the account whose token pushes, so GitHub links the commits to it
+``--git-email``: the noreply address of the GitHub App's bot, which pushes, so GitHub links the commits to it
 and the name says which slot wrote them. ``systemctl start fleetwright-agent@agent01`` runs
 ``scripts/fleetwright_agent.py`` as that user with ``FLEETWRIGHT_CLONE`` set, which turns on the stop switch and the
 write guard (docs/control-plane.md).
@@ -37,10 +37,12 @@ Without ``--apply`` nothing is run: the commands and files are printed for the o
 are safe to run again: an existing user or clone is kept.
 
 Secrets are not handled here. The units read them from files the operator writes by hand, owned by root
-with mode 600: ``/etc/fleetwright/agent.env`` (the model key and the authors' GitHub token) for every unit,
-``/etc/fleetwright/reviewer.env`` (the reviewer's ``GH_TOKEN`` and ``FLEETWRIGHT_REVIEWER_LOGIN``) for review slots
-only, so an author's run never has the reviewer's token, and ``/etc/fleetwright/allocator.env`` (a read-only
-``GH_TOKEN``) for the allocator.
+with mode 600: ``/etc/fleetwright/agent.env`` (the model key) for every slot, ``/etc/fleetwright/reviewer.env``
+(the reviewer's ``GH_TOKEN`` and ``FLEETWRIGHT_REVIEWER_LOGIN``) for review slots only, so an author's run never
+has the reviewer's token, and the authors' GitHub App: ``/etc/fleetwright/app.pem`` (its private key) and
+``/etc/fleetwright/app.env`` (its ids). The App's key never reaches a unit's user: each author slot, the
+allocator and the watchdog get a one-hour token of their own in ``/run/fleetwright/<unit>/gh-token``, minted
+as root when the unit starts (``scripts/fleetwright_token.py``).
 """
 
 from __future__ import annotations
@@ -68,7 +70,11 @@ FLEETWRIGHT_DIR = "/var/lib/fleetwright"
 ENV_DIR = "/etc/fleetwright"
 AGENT_ENV = f"{ENV_DIR}/agent.env"
 REVIEWER_ENV = f"{ENV_DIR}/reviewer.env"
-ALLOCATOR_ENV = f"{ENV_DIR}/allocator.env"
+# The authors' GitHub App: its private key and its ids, root's alone (scripts/fleetwright_token.py).
+APP_ENV = f"{ENV_DIR}/app.env"
+APP_KEY = f"{ENV_DIR}/app.pem"
+# Each unit's GitHub token lives in its own runtime directory under this one, made and removed by systemd.
+RUN_DIR = "/run/fleetwright"
 
 ADMIN_GROUP = "fleetwright-admin"
 AUTHOR_GROUP = "fleetwright-agent"
@@ -83,7 +89,8 @@ REVIEW_RE = re.compile(r"review[0-9]{2}")
 REPO_RE = re.compile(r"https://[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)+")
 KIT_RE = re.compile(r"(/[A-Za-z0-9._-]+)+")
 USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
-EMAIL_RE = re.compile(r"[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+# The local part may end in [bot]: a GitHub App's commits go to <id>+<app>[bot]@users.noreply.github.com.
+EMAIL_RE = re.compile(r"[A-Za-z0-9._+-]+(\[bot\])?@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
 
 # The units fleetwright-admin may start, stop, restart and reset, written once for Python and polkit's
 # JavaScript. Each template accepts only its own kind of slot, so an author unit cannot run as a reviewer.
@@ -94,7 +101,8 @@ ADMIN_UNITS_RE = (
     r"|fleetwright-check-review@review[0-9]{2}\.service"
     r"|fleetwright-allocate\.service|fleetwright-allocate\.timer|fleetwright-allocate-dry-run\.service"
     r"|fleetwright-watchdog\.service|fleetwright-watchdog\.timer"
-    r"|fleetwright-report\.service)"
+    r"|fleetwright-report\.service"
+    r"|fleetwright-token-refresh\.service|fleetwright-token-refresh\.timer)"
 )
 ADMIN_VERBS = ("start", "stop", "restart", "reset-failed")
 
@@ -146,6 +154,27 @@ def clone_path(slot: str) -> str:
     return f"/home/{validate_slot(slot)}/repo"
 
 
+def _token_lines(kit: str, folder: str, mode: str, owner: str, who: str, renewed: bool) -> str:
+    """A unit's own GitHub App token: minted as root before the unit's user starts, so the App's key never
+    reaches it, and revoked when the unit stops. systemd makes and removes the directory."""
+    run = f"{RUN_DIR}/{folder}"
+    token = f"/usr/bin/python3 {kit}/scripts/fleetwright_token.py"
+    lifetime = (
+        "renewed by fleetwright-token-refresh.timer while the unit runs"
+        if renewed
+        else "the unit ends well inside the token's hour"
+    )
+    return (
+        f"# Its GitHub App token ({mode}), readable by its user alone: minted as root ('+') before the unit\n"
+        f"# starts, {lifetime}, revoked when it stops (scripts/fleetwright_token.py).\n"
+        f"RuntimeDirectory=fleetwright/{folder}\n"
+        "RuntimeDirectoryMode=0700\n"
+        f"Environment=FLEETWRIGHT_TOKEN_FILE={run}/gh-token\n"
+        f"ExecStartPre=+{token} mint --mode {mode} --dir {run} --owner {owner} {who}\n"
+        f"ExecStopPost=+{token} revoke --dir {run} {who}\n"
+    )
+
+
 def _slot_unit(kit: str, role: str, check: bool = False) -> str:
     """A slot's template unit, or its check. ``%i`` is the slot, so user and clone name the same slot."""
     review = role == "review"
@@ -155,12 +184,16 @@ def _slot_unit(kit: str, role: str, check: bool = False) -> str:
     else:
         name = "fleetwright-review@review01" if review else "fleetwright-agent@agent01"
     secrets = (
-        f"# The model key from agent.env; the reviewer's GitHub token and expected login from reviewer.env,\n"
-        f"# read second so its GH_TOKEN replaces the authors'. Owned by root, mode 600; never in this file.\n"
-        f"EnvironmentFile={AGENT_ENV}\nEnvironmentFile={REVIEWER_ENV}"
+        f"# The model key from agent.env; the reviewer's GitHub token and expected login from reviewer.env.\n"
+        f"# Owned by root, mode 600; never in this file.\n"
+        f"EnvironmentFile={AGENT_ENV}\nEnvironmentFile={REVIEWER_ENV}\n"
         if review
-        else "# Secrets (the model key, the GitHub token). Owned by root, mode 600; never in this file.\n"
-        f"EnvironmentFile={AGENT_ENV}"
+        else "# The model key. Owned by root, mode 600; never in this file. GitHub is the App's token below.\n"
+        f"EnvironmentFile={AGENT_ENV}\n"
+        # A check gets a token of its own: one that stops must not revoke a running agent's.
+        + _token_lines(
+            kit, "check-%i" if check else "%i", "write", "%i", "--slot %i", renewed=not check
+        )
     )
     if check:
         intro = (
@@ -201,11 +234,11 @@ Environment=FLEETWRIGHT_ROLE={role}
 Environment=FLEETWRIGHT_CLONE=/home/%i/repo
 Environment=CC_PRACTICES_UNATTENDED=1
 Environment=GH_NO_UPDATE_NOTIFIER=1
-Environment=PATH=/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
+# {kit}/bin first: its gh reads the token file at each call, so a renewed token takes effect.
+Environment=PATH={kit}/bin:/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Beside the clone, what the write guard allows; the sandbox allows the same (managed-settings.json).
 Environment=FLEETWRIGHT_ALLOW_WRITE={":".join(f"/home/%i/{d}" for d in HOME_WRITE)}
-{secrets}
-ExecStart=/usr/bin/env uv run --script {kit}/scripts/{script}
+{secrets}ExecStart=/usr/bin/env uv run --script {kit}/scripts/{script}
 {tail}# The slot's user can write its home and a private /tmp, and nothing else. Other homes are closed to it
 # by their mode (700), not by this unit.
 NoNewPrivileges=yes
@@ -250,12 +283,9 @@ UMask=0002
 LoadCredential=fleetwright.json:{ENV_DIR}/fleetwright.json
 Environment=FLEETWRIGHT_CONFIG=%d/fleetwright.json
 Environment=GH_NO_UPDATE_NOTIFIER=1
-Environment=PATH={ALLOCATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
-# It only reads GitHub, but without allocator.env it holds the authors' token, which can write. Put a
-# read-only token there (GH_TOKEN=...) so a bug in the allocator cannot change the repository.
-EnvironmentFile={AGENT_ENV}
-EnvironmentFile=-{ALLOCATOR_ENV}
-ExecStart=/usr/bin/env uv run --script {kit}/scripts/fleetwright_allocate.py{" --dry-run" if dry_run else ""}
+Environment=PATH={kit}/bin:{ALLOCATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
+# It only reads GitHub, so its token can only read: a bug in the allocator cannot change the repository.
+{_token_lines(kit, "allocate-dry-run" if dry_run else "allocate", "read", ALLOCATOR_USER, "--unit fleetwright-allocate" + ("-dry-run" if dry_run else ""), renewed=False)}ExecStart=/usr/bin/env uv run --script {kit}/scripts/fleetwright_allocate.py{" --dry-run" if dry_run else ""}
 # A hung gh call must not hold the lock and stop every later pass.
 TimeoutStartSec=5min
 NoNewPrivileges=yes
@@ -302,11 +332,9 @@ UMask=0002
 LoadCredential=fleetwright.json:{ENV_DIR}/fleetwright.json
 Environment=FLEETWRIGHT_CONFIG=%d/fleetwright.json
 Environment=GH_NO_UPDATE_NOTIFIER=1
-Environment=PATH={ALLOCATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
-# It only reads GitHub: allocator.env's read-only token replaces the authors' when it is there.
-EnvironmentFile={AGENT_ENV}
-EnvironmentFile=-{ALLOCATOR_ENV}
-ExecStart=/usr/bin/env uv run --script {kit}/scripts/fleetwright_watchdog.py
+Environment=PATH={kit}/bin:{ALLOCATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
+# It only reads GitHub, so its token can only read.
+{_token_lines(kit, "watchdog", "read", ALLOCATOR_USER, "--unit fleetwright-watchdog", renewed=False)}ExecStart=/usr/bin/env uv run --script {kit}/scripts/fleetwright_watchdog.py
 TimeoutStartSec=5min
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -355,6 +383,44 @@ ProtectControlGroups=yes
 """
 
 
+def _token_refresh_service(kit: str) -> str:
+    return f"""{HEADER}# Mints a new GitHub App token for every running author slot before its hour is up; the slot's gh and
+# git read the file at each call. fleetwright-token-refresh.timer runs it. Each token is a journal line:
+#   journalctl -t fleetwright-token -o short-iso -n 20
+[Unit]
+Description=Fleet: renew the running author slots' GitHub App tokens
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root: it reads the App's key in {ENV_DIR} and writes into each slot's own runtime directory.
+Slice=fleetwright.slice
+ExecStart=/usr/bin/python3 {kit}/scripts/fleetwright_token.py renew
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths={RUN_DIR}
+PrivateTmp=yes
+"""
+
+
+TOKEN_REFRESH_TIMER = f"""{HEADER}# Enable once the App is set up (root): systemctl enable --now fleetwright-token-refresh.timer
+# A token lives an hour; every 20 minutes leaves two tries before one runs out.
+[Unit]
+Description=Renew the running author slots' GitHub App tokens every 20 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=20min
+Unit=fleetwright-token-refresh.service
+
+[Install]
+WantedBy=timers.target
+"""
+
+
 WATCHDOG_TIMER = f"""{HEADER}# Enable with the allocator's timer (root): systemctl enable --now fleetwright-watchdog.timer
 # Pause it as a member of fleetwright-admin: systemctl stop fleetwright-watchdog.timer
 [Unit]
@@ -399,6 +465,8 @@ def units(kit: str = DEFAULT_KIT) -> dict[str, str]:
         "fleetwright-watchdog.service": _watchdog_service(kit),
         "fleetwright-watchdog.timer": WATCHDOG_TIMER,
         "fleetwright-report.service": _report_service(kit),
+        "fleetwright-token-refresh.service": _token_refresh_service(kit),
+        "fleetwright-token-refresh.timer": TOKEN_REFRESH_TIMER,
     }
 
 
@@ -541,6 +609,13 @@ def init_commands(admins: Sequence[str]) -> list[list[str]]:
     ]
 
 
+# git asks with "get", "store" or "erase"; only "get" is answered. The file is the unit's App token.
+AUTHOR_CREDENTIAL_HELPER = (
+    '!f() { test "$1" = get || return 0; '
+    'printf \'username=x-access-token\\npassword=%s\\n\' "$(cat "$FLEETWRIGHT_TOKEN_FILE")"; }; f'
+)
+
+
 def setup_commands(slot: str, repo: str, email: str | None = None) -> list[list[str]]:
     """What root runs to create the slot, in order. Each is an argument list, never a shell string.
 
@@ -568,8 +643,18 @@ def setup_commands(slot: str, repo: str, email: str | None = None) -> list[list[
         # otherwise set the ACL mask to nothing.
         ["setfacl", "-m", f"g:{ADMIN_GROUP}:rx", home],
         [*as_slot, "git", "clone", "--", repo, clone],
-        # Pushes use the token in the unit's environment, through gh; nothing is stored in the clone.
-        [*as_slot, "git", "-C", clone, "config", "credential.helper", "!gh auth git-credential"],
+        # Nothing is stored in the clone. An author pushes with the App token its unit minted, read at each
+        # push so a renewed token takes effect; a reviewer with the token in its unit's environment.
+        [
+            *as_slot,
+            "git",
+            "-C",
+            clone,
+            "config",
+            "--replace-all",
+            "credential.helper",
+            AUTHOR_CREDENTIAL_HELPER if AUTHOR_RE.fullmatch(slot) else "!gh auth git-credential",
+        ],
         *(
             [
                 [*as_slot, "git", "-C", clone, "config", "user.name", f"{slot} (fleet)"],

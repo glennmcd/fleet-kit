@@ -193,6 +193,31 @@ def test_masking_takes_its_secrets_from_the_environment_and_skips_short_values()
     assert mask("x ghp_longenoughvalue y", ("ghp_longenoughvalue",)) == "x *** y"
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        "ghs_" + "A1b2" * 9,  # an App installation token
+        "ghs_123456_eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJJdjIzIn0.c2ln-_x",  # the newer stateless form
+        "ghp_" + "Z9" * 18,
+        "gho_" + "q" * 36,
+        "ghu_" + "q" * 36,
+        "ghr_" + "q" * 36,
+        "github_pat_11ABCDEFG0_" + "x" * 59,
+    ],
+)
+def test_a_github_token_is_masked_even_when_it_is_not_in_the_environment(token: str) -> None:
+    # An author's App token lives in a file, not the environment, and is renewed mid-run.
+    cmd = f"echo {token} > /tmp/t && cat $FLEETWRIGHT_TOKEN_FILE"
+    line = assistant({"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": cmd}})
+    (out,) = summarize_lines([line])
+    assert token not in out and token[4:20] not in out
+    assert out == "tool Bash: echo *** > /tmp/t && cat $FLEETWRIGHT_TOKEN_FILE"
+
+
+def test_words_that_only_start_like_a_token_are_left_alone() -> None:
+    assert mask("see ghs_ and ghp_x in the docs", ()) == "see ghs_ and ghp_x in the docs"
+
+
 def test_a_secret_split_by_the_cut_is_still_masked() -> None:
     secret = "ghp_" + "s" * 40
     cmd = "x" * (fleetwright_stream.ARG_MAX - 10) + secret

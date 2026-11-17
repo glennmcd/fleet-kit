@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shutil
 import stat
@@ -40,6 +41,9 @@ ENV_DIR = "/etc/fleetwright"
 STOP_FILE = f"{FLEETWRIGHT_DIR}/STOP"
 TOOLS = ("uv", "claude", "gh", "git", "rtk", "bwrap", "socat")
 MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json"
+# Beside an App token: its fingerprint, expiry and permissions as GitHub gave them (fleetwright_token.py).
+APP_RECORD = "gh-token.json"
+ORIGIN_RE = re.compile(r"github\.com[:/]([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$")
 SAFETY_HOOKS = ("stop_line.py", "write_guard.py")
 # A sandbox as Claude Code starts one: a user namespace over a read-only root.
 BWRAP_PROBE = ("bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "true")
@@ -237,19 +241,70 @@ def _model_key(m: Machine) -> Result:
     return "model key", False, f"none of {', '.join(MODEL_KEYS)} is set (agent.env)"
 
 
+def _origin_repo(m: Machine) -> str:
+    """owner/name of the clone's origin, or "" when it cannot be read."""
+    clone = m.env.get("FLEETWRIGHT_CLONE", "")
+    code, url = m.run(["git", "-C", clone, "remote", "get-url", "origin"])
+    match = ORIGIN_RE.search(url.strip()) if code == 0 else None
+    return match.group(1) if match else ""
+
+
+def _app_token(m: Machine) -> Result:
+    """An author's GitHub access: the App token its unit minted. It cannot call GET /user, so the check
+    reads the token's record and asks GitHub which repositories the token reaches."""
+    token_file = m.env.get("FLEETWRIGHT_TOKEN_FILE", "")
+    if not token_file:
+        return "github", False, "FLEETWRIGHT_TOKEN_FILE is not set: the unit mints no App token"
+    record_text = m.read(posixpath.join(posixpath.dirname(token_file), APP_RECORD))
+    try:
+        record = json.loads(record_text or "")
+        permissions = dict(record["permissions"])
+        expires = str(record.get("expires_at", "?"))
+    except (ValueError, KeyError, TypeError):
+        return (
+            "github",
+            False,
+            f"no App token beside {token_file}: the unit's mint failed (journalctl -t fleetwright-token)",
+        )
+    if permissions.get("contents") != "write":
+        return "github", False, "the App token cannot push (contents is not write)"
+    for power in ("administration", "workflows"):
+        if power in permissions:
+            return (
+                "github",
+                False,
+                f"the App token has {power}: take that permission off the App, so no agent can change "
+                "the repository's rules or workflows",
+            )
+    code, out = m.run(
+        ["gh", "api", "installation/repositories", "--jq", ".repositories[].full_name"]
+    )
+    if code != 0:
+        return "github", False, "GitHub refused the App token, or could not be reached"
+    repo = _origin_repo(m)
+    if not repo or repo not in out.split():
+        return "github", False, f"the App is not installed on {repo or 'the clone origin'}"
+    return (
+        "github",
+        True,
+        f"App token for {repo}: contents write, no administration or workflows, expires {expires}",
+    )
+
+
 def _github(m: Machine) -> Result:
     review = m.env.get("FLEETWRIGHT_ROLE") == "review"
+    if not review:
+        return _app_token(m)
     expected = m.env.get("FLEETWRIGHT_REVIEWER_LOGIN", "")
     if not m.env.get("GH_TOKEN"):
-        source = "reviewer.env" if review else "agent.env"
-        return "github", False, f"GH_TOKEN is not set ({source})"
-    if review and not expected:
+        return "github", False, "GH_TOKEN is not set (reviewer.env)"
+    if not expected:
         return "github", False, "FLEETWRIGHT_REVIEWER_LOGIN is not set (reviewer.env)"
     code, out = m.run(["gh", "api", "user", "--jq", ".login"])
     login = out.strip()
     if code != 0 or not login:
         return "github", False, "GitHub refused the token, or could not be reached"
-    if review and login != expected:
+    if login != expected:
         return "github", False, f"signed in as {login}, not {expected}: the runner exits 64"
     return "github", True, f"signed in as {login}"
 

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -184,6 +187,9 @@ def test_a_check_unit_runs_as_the_slot_with_the_slots_own_secrets_and_sandbox() 
             if ln.startswith("ExecStart=")
         )
         for line in real_lines:
+            # Its own token: a check that stops must not revoke a running agent's.
+            if line.startswith("Environment=FLEETWRIGHT_TOKEN_FILE="):
+                continue
             if line.startswith(
                 (
                     "User=",
@@ -209,7 +215,6 @@ def test_the_allocator_runs_as_its_own_user_not_root() -> None:
     # Group-writable files, so the admins can read and fix what a pass leaves.
     assert "UMask=0002" in service
     assert "TimeoutStartSec=5min" in service
-    assert "EnvironmentFile=-/etc/fleetwright/allocator.env" in service
     assert any(
         line.startswith("ExecStart=") and line.endswith("/scripts/fleetwright_allocate.py")
         for line in service
@@ -252,13 +257,167 @@ def test_the_watchdog_runs_as_the_allocators_user_and_can_read_the_journal() -> 
     assert "ReadWritePaths=/var/lib/fleetwright /var/lib/fleetwright-allocator" in service
     assert "ProtectSystem=strict" in service and "ProtectHome=yes" in service
     assert "UMask=0002" in service
-    assert "EnvironmentFile=-/etc/fleetwright/allocator.env" in service
     assert any(
         line.startswith("ExecStart=") and line.endswith("/scripts/fleetwright_watchdog.py")
         for line in service
     )
     timer = units()["fleetwright-watchdog.timer"].splitlines()
     assert "OnUnitInactiveSec=5min" in timer and "Unit=fleetwright-watchdog.service" in timer
+
+
+# --- GitHub App tokens ------------------------------------------------------------------------
+
+TOKEN_SCRIPT = "/usr/bin/python3 /opt/fleetwright/scripts/fleetwright_token.py"
+
+
+def unit_lines(name: str) -> list[str]:
+    return units()[name].splitlines()
+
+
+@pytest.mark.parametrize(
+    ("name", "folder"),
+    [("fleetwright-agent@.service", "%i"), ("fleetwright-check-agent@.service", "check-%i")],
+)
+def test_an_author_unit_mints_its_own_write_token_as_root_and_revokes_it(
+    name: str, folder: str
+) -> None:
+    lines = unit_lines(name)
+    run = f"/run/fleetwright/{folder}"
+    assert f"RuntimeDirectory=fleetwright/{folder}" in lines
+    assert "RuntimeDirectoryMode=0700" in lines
+    assert f"Environment=FLEETWRIGHT_TOKEN_FILE={run}/gh-token" in lines
+    # '+': root, before the slot's user starts; the App's key never reaches the slot.
+    assert (
+        f"ExecStartPre=+{TOKEN_SCRIPT} mint --mode write --dir {run} --owner %i --slot %i" in lines
+    )
+    assert f"ExecStopPost=+{TOKEN_SCRIPT} revoke --dir {run} --slot %i" in lines
+
+
+def test_an_author_slot_holds_no_github_token_in_its_environment() -> None:
+    for name in ("fleetwright-agent@.service", "fleetwright-check-agent@.service"):
+        env_files = [ln for ln in unit_lines(name) if ln.startswith("EnvironmentFile=")]
+        # agent.env holds the model key only; the authors' GitHub access is the App's token file.
+        assert env_files == ["EnvironmentFile=/etc/fleetwright/agent.env"], name
+
+
+def test_every_slot_unit_finds_the_gh_shim_first() -> None:
+    for name in (
+        "fleetwright-agent@.service",
+        "fleetwright-review@.service",
+        "fleetwright-check-agent@.service",
+        "fleetwright-check-review@.service",
+        "fleetwright-allocate.service",
+        "fleetwright-allocate-dry-run.service",
+        "fleetwright-watchdog.service",
+    ):
+        path = next(ln for ln in unit_lines(name) if ln.startswith("Environment=PATH="))
+        assert path.startswith("Environment=PATH=/opt/fleetwright/bin:"), name
+
+
+def test_review_units_keep_the_reviewers_own_token_and_mint_nothing() -> None:
+    for name in ("fleetwright-review@.service", "fleetwright-check-review@.service"):
+        text = units()[name]
+        assert "fleetwright_token.py" not in text and "FLEETWRIGHT_TOKEN_FILE" not in text, name
+
+
+@pytest.mark.parametrize(
+    ("name", "folder", "unit"),
+    [
+        ("fleetwright-allocate.service", "allocate", "fleetwright-allocate"),
+        (
+            "fleetwright-allocate-dry-run.service",
+            "allocate-dry-run",
+            "fleetwright-allocate-dry-run",
+        ),
+        ("fleetwright-watchdog.service", "watchdog", "fleetwright-watchdog"),
+    ],
+)
+def test_the_allocator_and_watchdog_read_github_with_a_read_only_token(
+    name: str, folder: str, unit: str
+) -> None:
+    lines = unit_lines(name)
+    run = f"/run/fleetwright/{folder}"
+    assert f"RuntimeDirectory=fleetwright/{folder}" in lines
+    assert f"Environment=FLEETWRIGHT_TOKEN_FILE={run}/gh-token" in lines
+    assert (
+        f"ExecStartPre=+{TOKEN_SCRIPT} mint --mode read --dir {run} "
+        f"--owner fleetwright-allocator --unit {unit}" in lines
+    )
+    assert f"ExecStopPost=+{TOKEN_SCRIPT} revoke --dir {run} --unit {unit}" in lines
+    # No token file of anyone else's: neither the authors' agent.env nor the old allocator.env.
+    assert not any(ln.startswith("EnvironmentFile=") for ln in lines), name
+
+
+def test_each_unit_has_its_own_token_directory() -> None:
+    folders = [
+        ln.removeprefix("RuntimeDirectory=")
+        for text in units().values()
+        for ln in text.splitlines()
+        if ln.startswith("RuntimeDirectory=")
+    ]
+    assert len(folders) == len(set(folders)) == 5
+
+
+def test_running_author_tokens_are_renewed_well_inside_their_hour() -> None:
+    service = unit_lines("fleetwright-token-refresh.service")
+    assert "Type=oneshot" in service
+    assert f"ExecStart={TOKEN_SCRIPT} renew" in service
+    assert "ReadWritePaths=/run/fleetwright" in service
+    assert "ProtectSystem=strict" in service and "ProtectHome=yes" in service
+    timer = unit_lines("fleetwright-token-refresh.timer")
+    assert "OnUnitActiveSec=20min" in timer
+    assert "Unit=fleetwright-token-refresh.service" in timer
+
+
+def test_an_app_bots_noreply_address_is_a_valid_commit_address() -> None:
+    bot = "123456789+g26work-fleet-authors[bot]@users.noreply.github.com"
+    commands = setup_commands("agent01", REPO, bot)
+    assert [
+        "runuser",
+        "-u",
+        "agent01",
+        "--",
+        "git",
+        "-C",
+        "/home/agent01/repo",
+        "config",
+        "user.email",
+        bot,
+    ] in commands
+
+
+def test_an_author_clone_pushes_with_the_token_file_and_a_reviewer_with_gh() -> None:
+    author = setup_commands("agent01", REPO, EMAIL)
+    helper = next(c for c in author if "credential.helper" in c)
+    assert helper[-3:-1] == ["--replace-all", "credential.helper"]
+    assert '"$FLEETWRIGHT_TOKEN_FILE"' in helper[-1] and "username=x-access-token" in helper[-1]
+    review = setup_commands("review01", REPO)
+    helper = next(c for c in review if "credential.helper" in c)
+    assert helper[-1] == "!gh auth git-credential"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_the_author_credential_helper_answers_get_with_the_current_token(tmp_path: Path) -> None:
+    helper = next(c for c in setup_commands("agent01", REPO, EMAIL) if "credential.helper" in c)[-1]
+    token = tmp_path / "gh-token"
+    token.write_text("ghs_first", encoding="utf-8")
+    env = {**os.environ, "FLEETWRIGHT_TOKEN_FILE": str(token)}
+    script = helper.removeprefix("!")
+
+    def ask(action: str) -> str:
+        done = subprocess.run(
+            ["sh", "-c", script + ' "$@"', "helper", action],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        return done.stdout
+
+    assert ask("get") == "username=x-access-token\npassword=ghs_first\n"
+    token.write_text("ghs_renewed", encoding="utf-8")
+    assert ask("get") == "username=x-access-token\npassword=ghs_renewed\n"
+    assert ask("store") == "" and ask("erase") == ""
 
 
 def test_the_report_unit_reads_every_slots_transcripts_and_nothing_leaves() -> None:
@@ -303,6 +462,8 @@ def test_the_report_unit_reads_every_slots_transcripts_and_nothing_leaves() -> N
         "fleetwright-watchdog.service",
         "fleetwright-watchdog.timer",
         "fleetwright-report.service",
+        "fleetwright-token-refresh.service",
+        "fleetwright-token-refresh.timer",
     ],
 )
 def test_admins_may_manage_the_fleets_units(unit: str) -> None:
@@ -327,6 +488,7 @@ def test_admins_may_manage_the_fleets_units(unit: str) -> None:
         "fleetwright-watchdog.serviceX",
         "fleetwright-report@agent01.service",
         "fleetwright-report.timer",
+        "fleetwright-token-refresh@agent01.service",
     ],
 )
 def test_admins_may_not_manage_any_other_unit(unit: str) -> None:

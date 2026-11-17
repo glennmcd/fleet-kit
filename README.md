@@ -142,7 +142,9 @@ the plugin on a desktop changes nothing. On the fleet machine both also run from
 agent command in Claude Code's sandbox with no way out and keep the hooks where no slot can edit them. A slot is an OS user with one clone:
 [`fleetwright_slot.py`](scripts/fleetwright_slot.py) creates it, and the template unit
 [`fleetwright-agent@.service`](systemd/fleetwright-agent@.service) runs [`fleetwright_agent.py`](scripts/fleetwright_agent.py), which
-starts a headless agent on the slot's assignment. Review slots run the same way with the reviewer's own GitHub
+starts a headless agent on the slot's assignment. Author slots act on GitHub through a GitHub App: each run gets a
+one-hour token of its own, minted as root by [`fleetwright_token.py`](scripts/fleetwright_token.py), limited to the
+repository and unable to change its rules or workflows. Review slots run the same way with the reviewer's own GitHub
 account. [`fleetwright_allocate.py`](scripts/fleetwright_allocate.py), on a timer, gives free slots their next review, fix round
 or new issue from GitHub, by weighted lanes. Root only sets the machine up (`fleetwright_slot.py init`, then `add` per
 slot); after that the `fleetwright-admin` group runs the fleet through a polkit rule, without reading its tokens, and

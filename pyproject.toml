@@ -54,6 +54,9 @@ files = [
   "scripts/fleetwright_stream.py",
   "tests/test_fleetwright_stream.py",
   "tests/test_fleetwright_check.py",
+  "scripts/fleetwright_token.py",
+  "tests/test_fleetwright_token.py",
+  "tests/test_gh_shim.py",
   "tests/test_evasion_write_guard.py",
   "tests/test_evasion_kit.py",
   "tests/test_evasion_silent_skips.py",
@@ -82,3 +85,4 @@ mypy_path = "scripts:hooks"
 "scripts/fleetwright_watchdog.py" = ["E501"]
 "scripts/fleetwright_stream.py" = ["E501"]
 "scripts/fleetwright_dash.py" = ["E501"]
+"scripts/fleetwright_token.py" = ["E501"]

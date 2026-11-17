@@ -117,17 +117,18 @@ up the machine once, then each slot:
 uv run --script scripts/fleetwright_slot.py init --admin "$USER"                    # prints what it would do
 sudo uv run --script scripts/fleetwright_slot.py init --admin "$USER" --apply      # the machine, once
 sudo uv run --script scripts/fleetwright_slot.py add agent01 --repo https://github.com/owner/name.git \
-    --git-email 123+you@users.noreply.github.com --apply
+    --git-email '123456789+g26work-fleet-authors[bot]@users.noreply.github.com' --apply
 sudo uv run --script scripts/fleetwright_slot.py add review01 --repo https://github.com/owner/name.git --apply
 ```
 
 Without `--apply` they only print. `init` creates the groups and users of [Who needs root](#who-needs-root),
 gives `/var/lib/fleetwright` to fleetwright-admin, and installs the units in [`systemd/`](../systemd), the polkit rule and
 the sshd file. `--kit` says where fleetwright is installed (default `/opt/fleetwright`). `add` creates the slot's
-user in its role's group, its clone, and sets the clone to push with the token from the unit's environment.
+user in its role's group and its clone. An author's clone pushes with the App token in its unit's token file,
+read at each push; a reviewer's with the token in its unit's environment, through `gh`.
 An author slot also gets a commit identity in its clone: `agent01 (fleet)` at the `--git-email` address, which
-should be the noreply address of the account whose token pushes, so GitHub links the commits to that account
-and the name shows which slot wrote them. `add` refuses an author slot without one.
+should be the noreply address of the App's bot, which pushes, so GitHub links the commits to it and the name
+shows which slot wrote them. `add` refuses an author slot without one.
 Both run no shell, stop at the first failure, and keep a user or clone that already exists, so a slot made
 before `init` existed is brought up to date by running `add` again.
 
@@ -135,28 +136,77 @@ The operator writes the secrets once, by hand. They are never in the repository 
 
 ```bash
 sudo install -m 600 -o root -g root /dev/null /etc/fleetwright/agent.env
-sudoedit /etc/fleetwright/agent.env       # ANTHROPIC_API_KEY=... and GH_TOKEN=... (the authors' account)
+sudoedit /etc/fleetwright/agent.env       # ANTHROPIC_API_KEY=... only
 sudo install -m 600 -o root -g root /dev/null /etc/fleetwright/reviewer.env
 sudoedit /etc/fleetwright/reviewer.env    # GH_TOKEN=... (the reviewer's account) and FLEETWRIGHT_REVIEWER_LOGIN=g26work
 ```
 
-Only the review unit reads `reviewer.env`, after `agent.env`, so its `GH_TOKEN` replaces the authors' one and an
-author's run never has it. The variable must be `GH_TOKEN`: `gh` prefers `GH_TOKEN` to `GITHUB_TOKEN`, so a
-reviewer token under `GITHUB_TOKEN` would lose to the authors' token. Both the runner and `post_verdict.py` check
-that `gh` is signed in as `FLEETWRIGHT_REVIEWER_LOGIN` and refuse otherwise, so that mistake stops a review instead of
-posting an approval as the author. The reviewer's account must be in `verdict.reviewers` in the repository's
+The authors' GitHub access is the App's ([below](#the-authors-github-app)): its private key and ids are
+`/etc/fleetwright/app.pem` and `/etc/fleetwright/app.env`, and no unit's user ever reads them.
+
+Only the review unit reads `reviewer.env`, so an author's run never has the reviewer's token. The variable must
+be `GH_TOKEN`, which `gh` prefers to `GITHUB_TOKEN`. Both the runner and `post_verdict.py` check
+that `gh` is signed in as `FLEETWRIGHT_REVIEWER_LOGIN` and refuse otherwise, so a token mix-up stops a review instead of
+posting an approval as someone else. The reviewer's account must be in `verdict.reviewers` in the repository's
 `.fleetwright-gates.json`.
 
 Give the reviewer's token as little as it needs: a fine-grained token that can read the repository and write
 pull request comments, and cannot push or merge. A review slot runs a model over code an author wrote, with no
 one watching, and its prompt is the only thing telling it not to push. The token's scope is what holds.
 
-The review slot also loads `agent.env` for the model key, so the authors' `GH_TOKEN` is in its environment
-until `reviewer.env` replaces it. The login checks catch a mix-up; keeping the model key in a file of its own
-would remove the authors' token from review slots altogether, and is the next step if that matters to you.
-
 Each slot's home is mode 700, so one slot cannot read another's clone or transcripts. An ACL lets fleetwright-admin
 read it, to look at a clone left for a person.
+
+## The authors' GitHub App
+
+The author slots act on GitHub through a GitHub App installed on the one repository, not through a person's
+account. The App has no Administration or Workflows permission and is on no ruleset's bypass list, so no
+author can change the repository's rules, merge past them, or push a change to `.github/workflows`.
+
+| Identity | Access | Credential on the machine | Used by |
+|---|---|---|---|
+| the operator's account | admin | none | people |
+| the App (commits as `<app>[bot]`) | this repository: contents, pull requests and issues read and write; actions, checks and statuses read | private key `/etc/fleetwright/app.pem` (root); per unit, a one-hour token | author slots (write), the allocator and watchdog (read) |
+| the reviewer's account | write | personal token in `reviewer.env` | review slots |
+
+**A token per unit.** Each author slot's unit, its check unit, the allocator, its dry run and the watchdog has a
+`RuntimeDirectory=` under `/run/fleetwright/`, which systemd makes when the unit starts and removes when it
+stops. `ExecStartPre=+` runs [`fleetwright_token.py`](../scripts/fleetwright_token.py) as root: it signs a JWT with
+the App's key, asks GitHub for a token limited to the repository and to the unit's mode (`write` for authors,
+`read` for the allocator and watchdog), and writes it to `gh-token`, mode 400, owned by the unit's user. Beside it,
+`gh-token.json` holds the token's fingerprint, expiry and permissions, never the token. `ExecStopPost=+` revokes the
+token. A failed mint fails the unit, and the allocator gives the work back.
+
+**Using it.** The units put `/opt/fleetwright/bin` first on `PATH`: its `gh` reads the token file at each call
+and runs the real `gh` with it. An author's clone has a credential helper that does the same for `git push`. No
+token is in any unit's environment.
+
+**Renewing it.** A token lives one hour. `fleetwright-token-refresh.timer` mints a new one for every running author
+slot every 20 minutes, so a run can last longer. The allocator, the watchdog and the checks finish well inside
+the hour.
+
+**The token log.** Each mint, renewal, revocation and failure is a journal line, written by the root process inside
+the unit, so journald stamps it `_UID=0` with the unit's name and run id, which no slot can forge:
+
+```text
+token minted slot=agent01 assignment="issue 12" mode=write id=sha256:3f9a1c07be42 expires=... permissions=...
+token renewed slot=agent01 assignment="issue 12" mode=write invocation=6b1e... id=sha256:90d2e4aa1b37 ...
+token revoked slot=agent01 assignment="issue 12" id=sha256:90d2e4aa1b37
+```
+
+```bash
+journalctl -t fleetwright-token -o short-iso --since today
+printf %s "$FOUND_TOKEN" | sha256sum | cut -c1-12      # a token found somewhere: which run had it?
+journalctl -t fleetwright-token --grep 'id=sha256:<the 12 characters>'
+```
+
+**Rotating the key.** The private key does not expire. Generate a second key on the App's page, install it as
+`/etc/fleetwright/app.pem`, run one author slot's check, then delete the old key on the App's page. If the key
+leaks, delete it there: every token it minted expires within the hour.
+
+What one App cannot do: every author slot is the same bot to GitHub, and GitHub grants write access per
+repository, not per branch, so nothing on GitHub stops one slot pushing to another's `issue/<n>` branch. The token
+log says which run held which token; one App per slot would give each a GitHub identity of its own.
 
 Not set up here yet (the VM setup will do it): `uv`, `claude`, `gh` and `rtk` on the machine, and this plugin
 and cc-practices installed for each slot's user. Without the plugin installed for that user, the hooks do not run.
@@ -206,8 +256,9 @@ What fleetwright-admin does **not** get, because either would make it root by an
   ```
 
   [`fleetwright_check.py`](../scripts/fleetwright_check.py) reports, without printing a secret: the slot's role, the
-  unattended switch, the tools on the PATH, that bubblewrap starts, that `gh` has `api --slurp` (2.48 or later), the model key's name, the `gh` login (and that it is
-  `FLEETWRIGHT_REVIEWER_LOGIN` on a review slot), the clone, both plugins, Claude Code's managed settings, the
+  unattended switch, the tools on the PATH, that bubblewrap starts, that `gh` has `api --slurp` (2.48 or later), the model key's name, GitHub access (on an author
+  slot, the App token: it can push, has no Administration or Workflows, and reaches the clone's repository; on a
+  review slot, the `gh` login is `FLEETWRIGHT_REVIEWER_LOGIN`), the clone, both plugins, Claude Code's managed settings, the
   home's mode, the sandbox (no write to `/var/lib/fleetwright`, no read of `/etc/fleetwright`) and the stop flag.
 - **The code.** `/opt/fleetwright`, the units and `/etc/claude-code/managed-settings.json` stay root's, so an
   admin cannot change what the slots and the allocator run. The slots' plugins are the exception: `claude plugin
@@ -365,8 +416,8 @@ fails to start gives its work back and is not counted as a run.
 Only pull requests from branches of the repository itself are handed out. A fork can name its branch
 `issue/<n>`, and its code must never reach a slot that holds tokens; fork PRs are left to people.
 
-Without `/etc/fleetwright/allocator.env` the allocator uses the authors' token from `agent.env`, which can write. Put
-a read-only `GH_TOKEN` in `allocator.env` so a bug in the allocator cannot change the repository. Merging an approved PR is not the allocator's
+The allocator reads GitHub with a read-only App token of its own, so a bug in the allocator cannot change the
+repository. Merging an approved PR is not the allocator's
 job: GitHub's required checks decide when it can merge, and a person (or auto-merge) merges it.
 
 The labels it reads, created once per repository:

@@ -20,7 +20,8 @@ the agent's events as they come and prints a summary of each to stdout, which sy
 What is printed: the tool and its target (a command, a path, a pattern), never a file body or an edit; how a tool
 call ended (ok, its exit code, an error, or why it was refused), never its output; the first line of what the
 agent says; failing hooks; and the run's totals. Every line is cut short, and the values of the secrets in the
-agent's environment are replaced with ``***`` before printing, as a backstop. The complete record stays in the
+agent's environment, and anything shaped like a GitHub token, are replaced with ``***`` before printing, as a
+backstop. The complete record stays in the
 agent's transcript under its home, readable by root.
 
 The runner stays the agent's parent and exits with its code, or 128 plus the signal that ended it. When systemd
@@ -64,10 +65,15 @@ def secrets_from(env: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(v for k in SECRET_VARS if len(v := env.get(k, "")) >= SECRET_MIN)
 
 
+# GitHub's token formats, masked wherever they appear: an author's App token is in a file, not the
+# environment, and is renewed mid-run, so masking by value alone would miss it.
+GITHUB_TOKEN_RE = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_.-]{16,}|github_pat_[A-Za-z0-9_]{20,})")
+
+
 def mask(text: str, secrets: Sequence[str]) -> str:
     for secret in secrets:
         text = text.replace(secret, "***")
-    return text
+    return GITHUB_TOKEN_RE.sub("***", text)
 
 
 def _cut(text: str, limit: int) -> str:
