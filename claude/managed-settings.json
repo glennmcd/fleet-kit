@@ -1,0 +1,48 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "allowWrite": [
+        "/tmp",
+        "~/.cache",
+        "~/.local/share/uv",
+        "~/.bun"
+      ]
+    }
+  },
+  "permissions": {
+    "deny": [
+      "Edit(~/.claude/**)",
+      "Edit(~/.claude.json)",
+      "Edit(//home/*/repo/.claude/settings*.json)",
+      "Edit(//home/*/repo/.claude/hooks/**)",
+      "Edit(//home/*/repo/.git/hooks/**)",
+      "Edit(//home/*/repo/.git/config)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script /opt/fleetwright/hooks/stop_line.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script /opt/fleetwright/hooks/write_guard.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

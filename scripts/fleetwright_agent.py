@@ -21,7 +21,8 @@ The units (``fleetwright-agent@.service`` and ``fleetwright-review@.service``, f
    is discarded, and if the stash fails the slot stays down until someone looks;
 6. fetches, and puts the clone where the work is: an author on the branch ``issue/<n>`` (the local one,
    brought up to the pushed one; the pushed one if another slot started it; else a new one from
-   ``origin/main``), a reviewer on the pull request's head commit, detached;
+   ``origin/main``) with ``origin``'s ``issue/<n>`` as its upstream, since the agent's sandbox keeps
+   ``.git/config`` read-only; a reviewer on the pull request's head commit, detached;
 7. starts ``claude -p`` with its events streamed, through ``scripts/fleetwright_stream.py``, which prints one line
    per step to the journal and exits with the agent's exit code.
 
@@ -72,7 +73,8 @@ def issue_prompt(issue: int, resumed: bool = False) -> str:
         f"Work on GitHub issue #{issue} of this repository. Read it with `gh issue view {issue} --comments`; "
         "if an earlier run on it posted a handoff comment, carry on from the latest one. "
         "Its Done when list is your approval and your definition of finished. "
-        f"You are on the branch issue/{issue}; commit there, push it, and open a pull request that "
+        f"You are on the branch issue/{issue}; commit there, push it with a plain `git push` (its "
+        "upstream is already set), and open a pull request that "
         "closes the issue, or continue the one that is open. "
         "Stop when every check except `reviewer-verdict` passes, or write a handoff if you cannot "
         "finish. `reviewer-verdict` stays red until the fleet's reviewer posts its verdict: that is "
@@ -167,9 +169,15 @@ def checkout_issue(issue: int, git: Git) -> tuple[str | None, bool]:
     elif pushed:
         switch = ["switch", "-c", branch, "--track", f"origin/{branch}"]
     else:
-        switch = ["switch", "-c", branch, BASE]
+        # --no-track: from origin/main, git would make main the upstream; the next step sets the real one.
+        switch = ["switch", "--no-track", "-c", branch, BASE]
     if git(switch)[0] != 0:
         return f"could not switch to {branch}", resumed
+    # The agent's sandbox keeps .git/config read-only, so `git push -u` could not record the upstream.
+    # Recorded here, before the agent starts, a plain `git push` creates or updates origin's issue branch.
+    for key, value in (("remote", "origin"), ("merge", f"refs/heads/{branch}")):
+        if git(["config", f"branch.{branch}.{key}", value])[0] != 0:
+            return f"could not set the upstream of {branch}", resumed
     if local and pushed and git(["merge", "--ff-only", f"origin/{branch}"])[0] != 0:
         return (
             f"the local {branch} has diverged from the pushed one; not choosing between them",

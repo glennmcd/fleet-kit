@@ -15,6 +15,7 @@ so it cannot change a tool that it or another slot runs.
 | Tool | Where | From | Why |
 |---|---|---|---|
 | `git`, `acl`, `polkitd`, `curl`, `unzip` | `/usr/bin` | Ubuntu | `setfacl` opens a slot's home to the admins; polkit holds the rule for the fleet's units |
+| `bubblewrap`, `socat` | `/usr/bin` | Ubuntu | Claude Code's sandbox runs every agent command in bubblewrap; socat relays its network traffic |
 | `node` 22, `npm` | `/usr/bin` | Ubuntu | the consumer project's formatter and tests |
 | `gh` 2.48 or later (2.104.0) | `/usr/bin` | GitHub's apt repository | Ubuntu's own package is older and has no `gh api --slurp`, which the allocator needs |
 | `claude` (2.1.311) | `/usr/bin` | Anthropic's apt repository | one copy for every slot; an apt install does not update itself |
@@ -28,8 +29,35 @@ The commands are for x86-64. Run them as a login user with sudo, never as a slot
 
 ```bash
 sudo apt update
-sudo apt install git acl polkitd curl unzip gnupg nodejs npm
+sudo apt install git acl polkitd curl unzip gnupg nodejs npm bubblewrap socat
 ```
+
+**AppArmor and bubblewrap.** Ubuntu stops unprivileged programs from creating user namespaces, which bubblewrap
+needs. Check whether the restriction is on, and whether a bwrap profile is already installed:
+
+```bash
+sysctl kernel.apparmor_restrict_unprivileged_userns
+ls /etc/apparmor.d/ | grep -i bwrap
+```
+
+If the first prints `= 1` and the second prints nothing, add a profile for bubblewrap:
+
+```bash
+sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/bwrap>
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+Step 6's slot check shows whether bubblewrap starts under a slot's unit. If it fails while a profile listed above
+is in place, that profile is the one to fix.
 
 **`gh`**, from GitHub's repository:
 
@@ -120,7 +148,8 @@ sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py add review01 --repo ht
 ```
 
 `init` creates the groups, the allocator's user, the `claude` login, `/var/lib/fleetwright`, the units, the polkit
-rule and the sshd file. `add` creates one slot's user and clone. An author slot also needs `--git-email`, the
+rule, the sshd file and Claude Code's managed settings (`/etc/claude-code/managed-settings.json`: the sandbox, and
+the stop switch and write guard from `/opt/fleetwright`; [control-plane.md](control-plane.md#claude-codes-sandbox)). `add` creates one slot's user and clone. An author slot also needs `--git-email`, the
 noreply address of the account whose token pushes, and commits as `agentNN (fleet)` at it. Print the address
 with that account's token: `gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"'`. Log in again to get the `fleetwright-admin` group.
 
@@ -187,7 +216,7 @@ that left `reviewer-verdict` red on four approved pull requests until every slot
 ```bash
 sudo git -C /opt/fleetwright pull --ff-only
 sudo git -C /opt/cc-practices-plugin pull --ff-only
-sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py init --admin <you> --apply       # when units or the polkit rule changed
+sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py init --admin <you> --apply       # when units, the polkit rule or the managed settings changed
 for s in agent01 agent02 agent03 agent04 review01; do                                       # every slot, both plugins
   sudo -u $s -H claude plugin update fleetwright@fleetwright
   sudo -u $s -H claude plugin update cc-practices@cc-practices

@@ -10,12 +10,15 @@
                                                                                   an author slot
     sudo fleetwright_slot.py add review01 --repo https://github.com/owner/name.git --apply  a review slot
     fleetwright_slot.py unit [--name fleetwright-review@.service]                             print the units
+    fleetwright_slot.py settings                                               print Claude Code's managed settings
 
 Root is needed for these two commands and nothing after them. ``init`` creates three groups:
 ``fleetwright-admin`` (the operators, a ``claude`` login for the operator's agent, and the allocator's own user
 ``fleetwright-allocator``), ``fleetwright-agent`` (the author slots) and ``fleetwright-review`` (the review slots). It gives
 ``/var/lib/fleetwright`` to fleetwright-admin and installs the units, a polkit rule that lets fleetwright-admin start, stop and
-reset the fleet's units and no others, and an sshd file that refuses logins as a slot. fleetwright-admin cannot
+reset the fleet's units and no others, an sshd file that refuses logins as a slot, and Claude Code's managed
+settings (``/etc/claude-code/managed-settings.json``): every agent's Bash commands run in Claude Code's
+sandbox, and the stop switch and write guard run from the kit, where no slot can edit them. fleetwright-admin cannot
 read the secrets in ``/etc/fleetwright`` or change the code or units that run as the slots: the check units
 (``fleetwright-check-agent@``, ``fleetwright-check-review@``) and ``fleetwright-allocate-dry-run`` run as the slot or the
 allocator with its secrets, and the admin reads their result in the journal.
@@ -43,6 +46,7 @@ only, so an author's run never has the reviewer's token, and ``/etc/fleetwright/
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -53,6 +57,11 @@ from pathlib import Path
 
 UNIT_DIR = "/etc/systemd/system"
 POLKIT_RULE = "/etc/polkit-1/rules.d/50-fleetwright.rules"
+# Claude Code reads this before any user, project or command-line setting, and none of them can loosen it.
+MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json"
+# Directories in a slot's home, beside its clone, that its tools write: uv's and bun's caches and uv's
+# Pythons. Both the sandbox and the write guard allow them, from this one list.
+HOME_WRITE = (".cache", ".local/share/uv", ".bun")
 SSHD_CONF = "/etc/ssh/sshd_config.d/50-fleetwright.conf"
 DEFAULT_KIT = "/opt/fleetwright"
 FLEETWRIGHT_DIR = "/var/lib/fleetwright"
@@ -193,6 +202,8 @@ Environment=FLEETWRIGHT_CLONE=/home/%i/repo
 Environment=CC_PRACTICES_UNATTENDED=1
 Environment=GH_NO_UPDATE_NOTIFIER=1
 Environment=PATH=/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Beside the clone, what the write guard allows; the sandbox allows the same (managed-settings.json).
+Environment=FLEETWRIGHT_ALLOW_WRITE={":".join(f"/home/%i/{d}" for d in HOME_WRITE)}
 {secrets}
 ExecStart=/usr/bin/env uv run --script {kit}/scripts/{script}
 {tail}# The slot's user can write its home and a private /tmp, and nothing else. Other homes are closed to it
@@ -424,11 +435,61 @@ DenyGroups {AUTHOR_GROUP} {REVIEW_GROUP}
 """
 
 
+def managed_settings(kit: str = DEFAULT_KIT) -> str:
+    """Claude Code's managed settings for every agent on the machine.
+
+    Bash commands, and whatever they start, run in Claude Code's sandbox: writes only in the clone, /tmp and
+    ``HOME_WRITE``, with no retry outside it. The file tools, which the sandbox does not cover, may not edit
+    the agent's own safety settings. The stop switch and the write guard run from the kit, which root owns,
+    so no slot can edit or remove them. The write guard's matcher is the plugin's (a test keeps them equal).
+    """
+    if not KIT_RE.fullmatch(kit):
+        raise ValueError(f"kit {kit!r}: give an absolute path of letters, digits, '.', '_' and '-'")
+
+    def hook(script: str) -> dict[str, object]:
+        return {
+            "type": "command",
+            "command": f"uv run --script {kit}/hooks/{script}",
+            "timeout": 30,
+        }
+
+    clone = "//home/*/repo"
+    settings = {
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "allowUnsandboxedCommands": False,
+            "filesystem": {"allowWrite": ["/tmp", *(f"~/{d}" for d in HOME_WRITE)]},
+        },
+        "permissions": {
+            "deny": [
+                "Edit(~/.claude/**)",
+                "Edit(~/.claude.json)",
+                f"Edit({clone}/.claude/settings*.json)",
+                f"Edit({clone}/.claude/hooks/**)",
+                f"Edit({clone}/.git/hooks/**)",
+                f"Edit({clone}/.git/config)",
+            ]
+        },
+        "hooks": {
+            "PreToolUse": [
+                {"hooks": [hook("stop_line.py")]},
+                {
+                    "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+                    "hooks": [hook("write_guard.py")],
+                },
+            ]
+        },
+    }
+    return json.dumps(settings, indent=2) + "\n"
+
+
 def machine_files(kit: str = DEFAULT_KIT) -> dict[str, str]:
     """Every file init writes, by absolute path."""
     files = {f"{UNIT_DIR}/{name}": text for name, text in units(kit).items()}
     files[POLKIT_RULE] = polkit_rule()
     files[SSHD_CONF] = SSHD_TEXT
+    files[MANAGED_SETTINGS] = managed_settings(kit)
     return files
 
 
@@ -641,8 +702,13 @@ def main(argv: list[str] | None = None, run: Run = _run, is_root: bool | None = 
     u = sub.add_parser("unit", help="print the unit files")
     u.add_argument("--kit", default=DEFAULT_KIT)
     u.add_argument("--name", help="print only this unit file")
+    s = sub.add_parser("settings", help="print Claude Code's managed settings for the machine")
+    s.add_argument("--kit", default=DEFAULT_KIT)
     args = parser.parse_args(argv)
     try:
+        if args.command == "settings":
+            print(managed_settings(args.kit), end="")
+            return 0
         if args.command == "unit":
             files = units(args.kit)
             if args.name:

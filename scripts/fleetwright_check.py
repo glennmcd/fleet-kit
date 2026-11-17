@@ -11,15 +11,19 @@ fleetwright-admin can check a slot without reading its tokens:
     journalctl -u fleetwright-check-review@review01 -o cat -n 30
 
 It reports, one line each: the slot's name and role agree; the unattended switch is on; the tools are on
-the PATH; ``gh`` has ``api --slurp`` (2.48 or later, which the allocator needs; Ubuntu's own package is
-older); a model key is set (its name, never its value); ``gh`` is signed in, as ``FLEETWRIGHT_REVIEWER_LOGIN``
-on a review slot; the clone is there and clean; both plugins are installed; the home is closed to other
-users; the sandbox keeps the slot out of ``/var/lib/fleetwright`` and ``/etc/fleetwright``; the line is not stopped.
+the PATH, ``bwrap`` and ``socat`` included; bubblewrap can start a sandbox under the unit; ``gh`` has
+``api --slurp`` (2.48 or later, which the allocator needs; Ubuntu's own package is older); a model key is set
+(its name, never its value); ``gh`` is signed in, as ``FLEETWRIGHT_REVIEWER_LOGIN`` on a review slot; the
+clone is there and clean; both plugins are installed; Claude Code's managed settings require the sandbox with
+no way out and run the stop switch and write guard from files only root can change; the home is closed to
+other users; the sandbox keeps the slot out of ``/var/lib/fleetwright`` and ``/etc/fleetwright``; the line is
+not stopped.
 Exit 0 when every check passes, 1 otherwise.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -29,11 +33,16 @@ import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 FLEETWRIGHT_DIR = "/var/lib/fleetwright"
 ENV_DIR = "/etc/fleetwright"
 STOP_FILE = f"{FLEETWRIGHT_DIR}/STOP"
-TOOLS = ("uv", "claude", "gh", "git", "rtk")
+TOOLS = ("uv", "claude", "gh", "git", "rtk", "bwrap", "socat")
+MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json"
+SAFETY_HOOKS = ("stop_line.py", "write_guard.py")
+# A sandbox as Claude Code starts one: a user namespace over a read-only root.
+BWRAP_PROBE = ("bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "true")
 PLUGINS = ("fleetwright", "cc-practices")
 MODEL_KEYS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 ROLES = {"author": re.compile(r"agent[0-9]{2}"), "review": re.compile(r"review[0-9]{2}")}
@@ -52,6 +61,8 @@ class Machine:
     mode: Callable[[str], int | None]
     writable: Callable[[str], bool]
     listable: Callable[[str], bool]
+    read: Callable[[str], str | None]
+    owner: Callable[[str], int | None]
 
 
 def _slot(m: Machine) -> Result:
@@ -81,6 +92,72 @@ def _tools(m: Machine) -> Result:
     if missing:
         return "tools", False, f"not on PATH: {', '.join(missing)}"
     return "tools", True, ", ".join(TOOLS)
+
+
+def _bubblewrap(m: Machine) -> Result:
+    """Claude Code's sandbox needs bubblewrap to start under this unit's restrictions, as the slot."""
+    code, _ = m.run(list(BWRAP_PROBE))
+    if code != 0:
+        return (
+            "bubblewrap",
+            False,
+            "bwrap cannot start a sandbox here: on Ubuntu, AppArmor blocks unprivileged user namespaces "
+            "until /etc/apparmor.d/bwrap allows them (docs/vm-setup.md)",
+        )
+    return "bubblewrap", True, "starts a sandbox under this unit"
+
+
+def _root_only(m: Machine, path: str) -> bool:
+    """Owned by root and writable by nobody else, so no slot can change it."""
+    mode = m.mode(path)
+    return m.owner(path) == 0 and mode is not None and not mode & 0o022
+
+
+def _hook_scripts(settings: Mapping[str, Any]) -> dict[str, str]:
+    """The script path each PreToolUse hook runs, by file name."""
+    groups = settings.get("hooks", {}).get("PreToolUse", [])
+    commands = [h.get("command", "") for g in groups for h in g.get("hooks", [])]
+    return {c.split()[-1].rsplit("/", 1)[-1]: c.split()[-1] for c in commands if c.split()}
+
+
+def _managed_settings(m: Machine) -> Result:
+    """The settings no slot can override: the sandbox with no way out, and the safety hooks from root's kit."""
+    name = "managed settings"
+    text = m.read(MANAGED_SETTINGS)
+    if text is None:
+        return name, False, f"{MANAGED_SETTINGS} is missing: run `fleetwright_slot.py init --apply`"
+    if not _root_only(m, MANAGED_SETTINGS):
+        return name, False, f"{MANAGED_SETTINGS} is not root's alone: a slot could loosen it"
+    try:
+        settings = json.loads(text)
+        sandbox = settings["sandbox"]
+    except (ValueError, KeyError, TypeError):
+        return name, False, f"{MANAGED_SETTINGS} is not valid JSON with a sandbox section"
+    if not (
+        sandbox.get("enabled") is True
+        and sandbox.get("failIfUnavailable") is True
+        and sandbox.get("allowUnsandboxedCommands") is False
+    ):
+        return (
+            name,
+            False,
+            "the sandbox must be enabled, required (failIfUnavailable) and with no way out "
+            "(allowUnsandboxedCommands false)",
+        )
+    scripts = _hook_scripts(settings)
+    for hook in SAFETY_HOOKS:
+        path = scripts.get(hook)
+        if path is None:
+            return name, False, f"{hook} is not a hook in {MANAGED_SETTINGS}"
+        # The directory too: whoever can write it can replace the file.
+        for p in (path, os.path.dirname(path)):
+            if not _root_only(m, p):
+                return name, False, f"{p} is not root's alone: a slot could switch {hook} off"
+    return (
+        name,
+        True,
+        f"{MANAGED_SETTINGS}: sandbox required, no way out, stop switch and write guard from root's kit",
+    )
 
 
 def _gh_version(m: Machine) -> Result:
@@ -187,11 +264,13 @@ CHECKS = (
     _slot,
     _unattended,
     _tools,
+    _bubblewrap,
     _gh_version,
     _model_key,
     _github,
     _clone,
     _plugins,
+    _managed_settings,
     _home,
     _sandbox,
     _stop,
@@ -241,6 +320,21 @@ def _writable(path: str) -> bool:
         return False
 
 
+def _read(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _owner(path: str) -> int | None:
+    try:
+        return os.stat(path).st_uid
+    except OSError:
+        return None
+
+
 def _listable(path: str) -> bool:
     try:
         os.listdir(path)
@@ -258,6 +352,8 @@ def main() -> int:
         mode=_mode,
         writable=_writable,
         listable=_listable,
+        read=_read,
+        owner=_owner,
     )
     return report(machine)
 

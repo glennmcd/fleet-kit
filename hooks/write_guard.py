@@ -21,6 +21,8 @@ What it checks:
   ``cd``, ``sudo``/``env`` wrappers, ``bash -c`` and ``eval`` strings, ``$(...)`` and ``find -exec``.
 * The agent's own safety settings, even inside its clone: ``.claude/settings*.json``, ``.claude/hooks`` and
   ``.git/hooks``, because an agent that can edit them can switch the guards off.
+* A ``Bash`` call that asks to run outside Claude Code's sandbox (``dangerouslyDisableSandbox``). The managed
+  settings forbid it too; this refusal says why.
 
 What it cannot see: code that writes from inside a program (``python -c``, ``node -e``, a build script, a test
 that writes), and reads. This hook is a guard against mistakes. The boundary that holds is the agent's OS user:
@@ -477,6 +479,13 @@ def decide(payload: dict[str, Any]) -> dict[str, Any] | None:
         refusal = check_target(raw, cwd, roots)
         return deny(refusal) if refusal else None
     if tool == "Bash":
+        # Claude Code's sandbox confines every command and what it starts; a retry outside it would
+        # carry none of that. Anything but an explicit false counts as asking to leave.
+        if tool_input.get("dangerouslyDisableSandbox") not in (None, False):
+            return deny(
+                "A fleet agent's commands always run in Claude Code's sandbox, so dangerouslyDisableSandbox "
+                "is refused. Run the command as it is; if the sandbox blocks it, say what it needed"
+            )
         command = tool_input.get("command")
         if not isinstance(command, str):
             return deny("Bash without a command")

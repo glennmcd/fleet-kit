@@ -16,6 +16,8 @@ Environment=FLEETWRIGHT_CLONE=/home/%i/repo
 Environment=CC_PRACTICES_UNATTENDED=1
 Environment=GH_NO_UPDATE_NOTIFIER=1
 Environment=PATH=/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Beside the clone, what the write guard allows; the sandbox allows the same (managed-settings.json).
+Environment=FLEETWRIGHT_ALLOW_WRITE=/home/%i/.cache:/home/%i/.local/share/uv:/home/%i/.bun
 # Secrets (the model key, the GitHub token). Owned by root, mode 600; never in this file.
 EnvironmentFile=/etc/fleetwright/agent.env
 ExecStart=/usr/bin/env uv run --script /opt/fleetwright/scripts/fleetwright_agent.py

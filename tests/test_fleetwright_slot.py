@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import fleetwright_slot
 import pytest
@@ -13,6 +15,7 @@ from fleetwright_slot import (
     clone_path,
     init_commands,
     machine_files,
+    managed_settings,
     polkit_rule,
     setup_commands,
     unit_text,
@@ -354,6 +357,105 @@ def test_the_machine_files_are_the_units_the_rule_and_the_sshd_file() -> None:
     for name in units():
         assert f"/etc/systemd/system/{name}" in files
     assert files["/etc/polkit-1/rules.d/50-fleetwright.rules"] == polkit_rule()
+    assert files["/etc/claude-code/managed-settings.json"] == managed_settings()
+
+
+# --- managed settings: the sandbox, the deny rules and the hooks no slot can edit ---------------
+
+
+def settings(kit: str = "/opt/fleetwright") -> dict[str, Any]:
+    parsed = json.loads(managed_settings(kit))
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def test_every_bash_command_runs_in_the_sandbox_with_no_way_out() -> None:
+    sandbox = settings()["sandbox"]
+    assert sandbox["enabled"] is True
+    # Without bubblewrap, stop rather than run unsandboxed.
+    assert sandbox["failIfUnavailable"] is True
+    # The model may otherwise retry a refused command outside the sandbox, with no prompt under
+    # --dangerously-skip-permissions.
+    assert sandbox["allowUnsandboxedCommands"] is False
+
+
+def test_the_sandbox_and_the_write_guard_allow_the_same_directories() -> None:
+    allow = settings()["sandbox"]["filesystem"]["allowWrite"]
+    assert allow[0] == "/tmp"
+    home_dirs = [p.removeprefix("~/") for p in allow[1:]]
+    assert all(p.startswith("~/") for p in allow[1:])
+    for name in (
+        "fleetwright-agent@.service",
+        "fleetwright-review@.service",
+        "fleetwright-check-agent@.service",
+        "fleetwright-check-review@.service",
+    ):
+        line = next(
+            ln
+            for ln in units()[name].splitlines()
+            if ln.startswith("Environment=FLEETWRIGHT_ALLOW_WRITE=")
+        )
+        value = line.split("=", 2)[2]
+        assert value.split(":") == [f"/home/%i/{d}" for d in home_dirs], name
+
+
+def test_the_caches_the_projects_tools_write_are_allowed() -> None:
+    allow = settings()["sandbox"]["filesystem"]["allowWrite"]
+    for path in ("~/.cache", "~/.local/share/uv", "~/.bun"):
+        assert path in allow
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "Edit(~/.claude/**)",
+        "Edit(~/.claude.json)",
+        "Edit(//home/*/repo/.claude/settings*.json)",
+        "Edit(//home/*/repo/.claude/hooks/**)",
+        "Edit(//home/*/repo/.git/hooks/**)",
+        "Edit(//home/*/repo/.git/config)",
+    ],
+)
+def test_the_file_tools_may_not_edit_the_agents_own_safety_settings(rule: str) -> None:
+    # The sandbox covers Bash only; deny rules hold for the file tools in every permission mode.
+    assert rule in settings()["permissions"]["deny"]
+
+
+def test_the_safety_hooks_run_from_the_root_owned_kit_and_match_the_plugins() -> None:
+    plugin = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    managed = settings("/srv/kit")["hooks"]["PreToolUse"]
+    commands = {h["command"]: g.get("matcher") for g in managed for h in g["hooks"]}
+    assert commands == {
+        "uv run --script /srv/kit/hooks/stop_line.py": None,
+        "uv run --script /srv/kit/hooks/write_guard.py": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+    }
+    plugin_matchers = {
+        h["command"].rsplit("/", 1)[-1].rstrip('"'): g.get("matcher")
+        for g in plugin["PreToolUse"]
+        for h in g["hooks"]
+    }
+    for script in ("stop_line.py", "write_guard.py"):
+        assert (ROOT / "hooks" / script).is_file()
+        managed_matcher = next(m for c, m in commands.items() if c.endswith(script))
+        assert managed_matcher == plugin_matchers[script], script
+
+
+def test_the_managed_settings_name_the_kit_they_were_made_for() -> None:
+    for bad in ("kit", "/opt/kit;id", "/opt/kit\nx"):
+        with pytest.raises(ValueError):
+            managed_settings(bad)
+
+
+def test_the_committed_managed_settings_are_the_generated_ones() -> None:
+    committed = (ROOT / "claude" / "managed-settings.json").read_text(encoding="utf-8")
+    assert committed == managed_settings()
+
+
+def test_the_settings_command_prints_the_managed_settings(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert fleetwright_slot.main(["settings", "--kit", "/srv/kit"]) == 0
+    assert capsys.readouterr().out == managed_settings("/srv/kit")
 
 
 # --- init: the machine, once ----------------------------------------------------------------------

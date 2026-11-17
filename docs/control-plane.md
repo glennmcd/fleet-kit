@@ -1,14 +1,16 @@
 # Control plane (round 5)
 
 What runs a few agents (four authors in round 5) on one Linux machine without them trampling each other, and lets one person stop
-them. This page covers what is built: the stop switch and the write guard, which protect against the rest; the
+them. This page covers what is built: the stop switch, the write guard and Claude Code's sandbox, which protect against the rest; the
 slots (an OS user, its clone and its service unit), for authors and for reviewers; who needs root (only setup);
 the allocator that gives them work; and the watchdog. Setting the machine up is in [vm-setup.md](vm-setup.md).
 
-The design is two layers. **Hooks** give an agent a clear refusal and keep it from making honest mistakes.
-**The agent's OS user** is the boundary that holds: each agent runs as its own user, and that user can write
-only its own clone. A hook that reads command lines cannot see a program that writes for itself, so a hook
-alone is not a sandbox.
+The design is three layers. **Hooks** give an agent a clear refusal and keep it from making honest mistakes.
+**Claude Code's sandbox** confines every Bash command and whatever it starts to the clone, `/tmp` and the tools'
+caches, and keeps the agent's own settings and hooks read-only, even inside its home. **The agent's OS user** is
+the boundary under both: each agent runs as its own user, and that user can write only its own home. A hook that
+reads command lines cannot see a program that writes for itself, so a hook alone is not a sandbox; the sandbox
+and the OS user are what hold.
 
 ## Environment an agent runs with
 
@@ -57,16 +59,46 @@ wrappers, `bash -c` and `eval` strings, `$(...)` and `find -exec`. A target it c
 variable, a brace expansion, a process substitution) is refused rather than guessed.
 
 It also protects the agent's own safety settings, even inside its clone: `.claude/settings*.json`,
-`.claude/hooks/` and `.git/hooks/`. An agent that can edit them can switch the guards off.
+`.claude/hooks/` and `.git/hooks/`. An agent that can edit them can switch the guards off. And it refuses a
+`Bash` call that asks to run outside Claude Code's sandbox (`dangerouslyDisableSandbox`), with the reason.
 
 ### What it cannot see
 
 These are allowed, on purpose, and written down as tests (`KNOWN LIMIT` in
 `tests/test_evasion_write_guard.py`):
 
-- code that writes from inside a program: `python -c`, `node -e`, `perl -i`, a build script, a test suite;
-- reads. An agent can read another clone;
+- code that writes from inside a program: `python -c`, `node -e`, `perl -i`, a build script, a test suite.
+  Claude Code's sandbox confines these (next section);
+- reads. An agent can read another clone's files only where the OS lets it, and the 700 homes do not;
 - anything the OS lets the agent's user do outside the checkout. This is why each agent gets its own user.
+
+## Claude Code's sandbox
+
+`fleetwright_slot.py init` writes Claude Code's managed settings,
+[`/etc/claude-code/managed-settings.json`](../claude/managed-settings.json). Claude Code reads them before any
+user, project or command-line setting, and nothing below them can loosen them. The file is root's, so no slot can
+change it.
+
+| Setting | Effect |
+|---|---|
+| `sandbox.enabled` | every Bash command, and every process it starts, runs in bubblewrap: writes only in the clone, `/tmp` and `~/.cache`, `~/.local/share/uv` and `~/.bun`; `.claude` settings and hooks, `.git` hooks and config, and `~/.claude` stay read-only |
+| `sandbox.failIfUnavailable` | without a working bubblewrap, Claude Code stops instead of running commands unsandboxed |
+| `sandbox.allowUnsandboxedCommands: false` | no retry outside the sandbox. Without it, a refused command may be retried unsandboxed, and under `--dangerously-skip-permissions` that retry needs no prompt |
+| `permissions.deny` | the file tools, which the sandbox does not cover, may not edit `~/.claude`, the clone's `.claude` settings and hooks, or `.git` hooks and config. Deny rules hold in every permission mode |
+| `hooks` | the stop switch and the write guard, run from `/opt/fleetwright`, which root owns. The plugin's copies sit in the slot's own `~/.claude`; these do not |
+
+The sandbox and the write guard allow the same directories: `HOME_WRITE` in `fleetwright_slot.py` makes both the
+sandbox's `allowWrite` and the units' `FLEETWRIGHT_ALLOW_WRITE`. A command the hook allows can still fail in the
+sandbox with `Operation not permitted`; that means a missing directory in `HOME_WRITE`, never a reason to turn the
+sandbox off.
+
+The sandbox keeps `.git/config` read-only, so `git push -u` cannot record an upstream. `fleetwright_agent.py` sets
+`issue/<n>`'s upstream before the agent starts, and the agent pushes with a plain `git push`.
+
+The slot check reports both halves: `bubblewrap` (it can start a sandbox under the unit's restrictions, as the
+slot) and `managed settings` (the file and both hook scripts are root's alone, and the sandbox is enabled,
+required and without a way out). Install `bubblewrap` and `socat` first; on Ubuntu, AppArmor needs a profile that
+lets bubblewrap make a user namespace ([vm-setup.md](vm-setup.md)).
 
 ## OS user per agent (what holds)
 
@@ -168,11 +200,13 @@ What fleetwright-admin does **not** get, because either would make it root by an
   ```
 
   [`fleetwright_check.py`](../scripts/fleetwright_check.py) reports, without printing a secret: the slot's role, the
-  unattended switch, the tools on the PATH, that `gh` has `api --slurp` (2.48 or later), the model key's name, the `gh` login (and that it is
-  `FLEETWRIGHT_REVIEWER_LOGIN` on a review slot), the clone, both plugins, the home's mode, the sandbox (no write to
-  `/var/lib/fleetwright`, no read of `/etc/fleetwright`) and the stop flag.
-- **The code.** `/opt/fleetwright`, the units and the slots' plugins run as the slots or the allocator; they stay
-  root's, so an admin cannot change what those users run.
+  unattended switch, the tools on the PATH, that bubblewrap starts, that `gh` has `api --slurp` (2.48 or later), the model key's name, the `gh` login (and that it is
+  `FLEETWRIGHT_REVIEWER_LOGIN` on a review slot), the clone, both plugins, Claude Code's managed settings, the
+  home's mode, the sandbox (no write to `/var/lib/fleetwright`, no read of `/etc/fleetwright`) and the stop flag.
+- **The code.** `/opt/fleetwright`, the units and `/etc/claude-code/managed-settings.json` stay root's, so an
+  admin cannot change what the slots and the allocator run. The slots' plugins are the exception: `claude plugin
+  install` copies them into each slot's `~/.claude`, which the slot owns. That is why the stop switch and the
+  write guard also run from the managed settings, and the sandbox keeps `~/.claude` read-only.
 
 Members of a new group must log in again before they have it (`id` shows the groups).
 
@@ -220,11 +254,12 @@ The units run [`scripts/fleetwright_agent.py`](../scripts/fleetwright_agent.py),
 | `git fetch` and the checkout work | exit 70 |
 
 An author works on the branch `issue/<n>`: the local one, fast-forwarded to the pushed one; the pushed one if
-another slot started it; else a new one from `origin/main`. A local branch that has diverged from the pushed one
+another slot started it; else a new one from `origin/main`. Its upstream is set to `origin`'s `issue/<n>` before
+the agent starts, since the sandbox keeps `.git/config` read-only. A local branch that has diverged from the pushed one
 is left for a person. A reviewer checks out the pull request's head commit, detached. Then the script starts
 `claude -p` with a fixed prompt for the kind of work (a new issue, a fix round, or cc-practices' `review-pr`
 skill), and exits with the agent's exit code. The agent runs with `--dangerously-skip-permissions`: nobody is
-there to answer a prompt, and the limits are the OS user, the unit's sandbox and the two hooks.
+there to answer a prompt, and the limits are the OS user, the unit's sandbox, Claude Code's sandbox and the two hooks.
 
 ### Watching an agent
 

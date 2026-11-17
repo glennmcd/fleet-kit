@@ -137,7 +137,9 @@ mode and the posting helper) is in cc-practices.
 Two hooks that protect against the rest, built first: [`stop_line.py`](hooks/stop_line.py) refuses every tool
 call while one flag file exists (`scripts/fleetwright_stop.py stop`), and [`write_guard.py`](hooks/write_guard.py)
 refuses writes outside the agent's own clone. Both act only on a fleet agent (`FLEETWRIGHT_CLONE` set), so installing
-the plugin on a desktop changes nothing. A slot is an OS user with one clone:
+the plugin on a desktop changes nothing. On the fleet machine both also run from Claude Code's managed settings
+([`claude/managed-settings.json`](claude/managed-settings.json), written by `fleetwright_slot.py init`), which put every
+agent command in Claude Code's sandbox with no way out and keep the hooks where no slot can edit them. A slot is an OS user with one clone:
 [`fleetwright_slot.py`](scripts/fleetwright_slot.py) creates it, and the template unit
 [`fleetwright-agent@.service`](systemd/fleetwright-agent@.service) runs [`fleetwright_agent.py`](scripts/fleetwright_agent.py), which
 starts a headless agent on the slot's assignment. Review slots run the same way with the reviewer's own GitHub

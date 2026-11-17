@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 
 import fleetwright_check
 import pytest
 from fleetwright_check import Machine, run_checks
+from fleetwright_slot import managed_settings
 
+MANAGED = "/etc/claude-code/managed-settings.json"
 TOKEN = "ghp_secretsecretsecret"
 KEY = "sk-ant-secretsecret"
 CLONE = "/home/review01/repo"
@@ -28,7 +31,11 @@ class Fake:
         }
         if role == "review":
             self.env["FLEETWRIGHT_REVIEWER_LOGIN"] = "g26work"
-        self.tools = {"uv", "claude", "gh", "git", "rtk"}
+        self.tools = {"uv", "claude", "gh", "git", "rtk", "bwrap", "socat"}
+        self.files = {MANAGED: managed_settings()}
+        self.owners: dict[str, int] = {}  # uid by path; root unless named
+        self.modes: dict[str, int] = {}  # mode by path; the home's mode unless named
+        self.bwrap_ok = True
         self.login = "g26work" if role == "review" else "glennmcd"
         self.gh_version = "2.104.0"
         self.gh_slurp = True
@@ -55,6 +62,8 @@ class Fake:
             return 0, "https://github.com/glennmcd/commitment-tracker-ai.git\n"
         if "status" in command:
             return 0, self.porcelain
+        if command[:1] == ["bwrap"]:
+            return (0, "") if self.bwrap_ok else (1, "")
         if command[:3] == ["claude", "plugin", "list"]:
             return (0, self.plugins) if self.plugins is not None else (1, "")
         return 1, ""
@@ -65,9 +74,11 @@ class Fake:
             run=self.run,
             which=lambda name: f"/usr/bin/{name}" if name in self.tools else None,
             exists=lambda path: path in self.paths,
-            mode=lambda path: self.home_mode,
+            mode=lambda path: self.modes.get(path, self.home_mode),
             writable=lambda path: path in self.writable,
             listable=lambda path: path in self.listable,
+            read=lambda path: self.files.get(path),
+            owner=lambda path: self.owners.get(path, 0),
         )
 
 
@@ -126,6 +137,100 @@ def test_a_missing_tool_is_named() -> None:
     fake.tools.discard("rtk")
     ok, detail = results(fake)["tools"]
     assert not ok and "rtk" in detail
+
+
+@pytest.mark.parametrize("tool", ["bwrap", "socat"])
+def test_the_sandbox_needs_bubblewrap_and_socat(tool: str) -> None:
+    fake = Fake("author")
+    fake.tools.discard(tool)
+    ok, detail = results(fake)["tools"]
+    assert not ok and tool in detail
+
+
+def test_bubblewrap_that_cannot_start_under_the_unit_fails_and_says_why() -> None:
+    fake = Fake("author")
+    assert results(fake)["bubblewrap"] == (True, "starts a sandbox under this unit")
+    assert ["bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "true"] in fake.ran
+    fake.bwrap_ok = False
+    ok, detail = results(fake)["bubblewrap"]
+    assert not ok and "apparmor" in detail.lower()
+
+
+def test_ready_managed_settings_pass() -> None:
+    assert results(Fake("author"))["managed settings"] == (
+        True,
+        f"{MANAGED}: sandbox required, no way out, stop switch and write guard from root's kit",
+    )
+
+
+def broken(change: str) -> Fake:
+    fake = Fake("author")
+    settings = json.loads(managed_settings())
+    if change == "sandbox off":
+        settings["sandbox"]["enabled"] = False
+    elif change == "unsandboxed allowed":
+        settings["sandbox"]["allowUnsandboxedCommands"] = True
+    elif change == "no fail if unavailable":
+        del settings["sandbox"]["failIfUnavailable"]
+    elif change == "no write guard":
+        settings["hooks"]["PreToolUse"] = settings["hooks"]["PreToolUse"][:1]
+    elif change == "no stop line":
+        settings["hooks"]["PreToolUse"] = settings["hooks"]["PreToolUse"][1:]
+    fake.files[MANAGED] = json.dumps(settings)
+    return fake
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "sandbox off",
+        "unsandboxed allowed",
+        "no fail if unavailable",
+        "no write guard",
+        "no stop line",
+    ],
+)
+def test_managed_settings_that_let_an_agent_out_fail(change: str) -> None:
+    assert not results(broken(change))["managed settings"][0]
+
+
+def test_missing_or_unreadable_managed_settings_fail() -> None:
+    fake = Fake("author")
+    del fake.files[MANAGED]
+    ok, detail = results(fake)["managed settings"]
+    assert not ok and "init" in detail
+    fake.files[MANAGED] = "{not json"
+    assert not results(fake)["managed settings"][0]
+
+
+def test_managed_settings_a_non_root_user_could_change_fail() -> None:
+    fake = Fake("author")
+    fake.owners[MANAGED] = 1001
+    assert not results(fake)["managed settings"][0]
+    fake = Fake("author")
+    fake.modes[MANAGED] = 0o664
+    assert not results(fake)["managed settings"][0]
+
+
+def test_hooks_the_slot_could_edit_fail() -> None:
+    fake = Fake("author")
+    fake.owners["/opt/fleetwright/hooks/write_guard.py"] = 1001
+    ok, detail = results(fake)["managed settings"]
+    assert not ok and "write_guard.py" in detail
+    fake = Fake("author")
+    fake.modes["/opt/fleetwright/hooks/stop_line.py"] = 0o666
+    assert not results(fake)["managed settings"][0]
+
+
+def test_a_hook_directory_the_slot_could_write_fails() -> None:
+    # Whoever can write the directory can replace the file in it.
+    fake = Fake("author")
+    fake.owners["/opt/fleetwright/hooks"] = 1001
+    ok, detail = results(fake)["managed settings"]
+    assert not ok and "/opt/fleetwright/hooks" in detail
+    fake = Fake("author")
+    fake.modes["/opt/fleetwright/hooks"] = 0o777
+    assert not results(fake)["managed settings"][0]
 
 
 def test_a_gh_that_can_slurp_pages_passes_and_shows_its_version() -> None:

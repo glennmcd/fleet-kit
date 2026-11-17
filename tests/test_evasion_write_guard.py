@@ -132,6 +132,39 @@ def test_the_hook_does_nothing_on_a_machine_that_is_not_a_fleet_agent(
     assert world.bash(f"rm -rf {world.out}") is None
 
 
+def sandbox_off(world: World, command: str, value: Any) -> dict[str, Any] | None:
+    return write_guard.decide(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": command, "dangerouslyDisableSandbox": value},
+            "cwd": str(world.clone),
+        }
+    )
+
+
+@pytest.mark.parametrize("value", [True, "true", 1, "yes"])
+def test_a_command_that_asks_to_leave_the_sandbox_is_refused_even_inside_the_clone(
+    world: World, value: Any
+) -> None:
+    out = sandbox_off(world, "ls", value)
+    assert denied(out)
+    assert out is not None
+    assert "sandbox" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("value", [False, None])
+def test_a_command_that_stays_in_the_sandbox_is_judged_as_before(world: World, value: Any) -> None:
+    assert sandbox_off(world, "ls", value) is None
+    assert denied(sandbox_off(world, f"touch {world.out}/x", value))
+
+
+def test_leaving_the_sandbox_is_not_judged_on_a_machine_that_is_not_a_fleet_agent(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FLEETWRIGHT_CLONE")
+    assert sandbox_off(world, "ls", True) is None
+
+
 def test_extra_write_directories_and_the_temp_directory_are_allowed(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

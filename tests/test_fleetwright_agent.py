@@ -99,7 +99,9 @@ def test_a_fresh_issue_starts_on_a_new_branch_from_main(env: dict[str, str]) -> 
     git, launch = FakeGit(), Launch()
     assert run(env, git, launch) == 0
     assert git.ran("fetch") == [["fetch", "origin"]]
-    assert git.ran("switch") == [["switch", "-c", "issue/12", "origin/main"]]
+    # --no-track: from origin/main, git would make main the upstream, and a plain `git push`
+    # would refuse.
+    assert git.ran("switch") == [["switch", "--no-track", "-c", "issue/12", "origin/main"]]
     assert git.calls.index(["fetch", "origin"]) < git.calls.index(git.ran("switch")[0])
     assert launch.argv is not None
     assert launch.argv[:2] == ["claude", "-p"]
@@ -327,7 +329,40 @@ def test_leftovers_that_cannot_be_stashed_are_left_alone(
     assert "uncommitted" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("step", ["status", "fetch", "switch"])
+UPSTREAM = [
+    ["config", "branch.issue/12.remote", "origin"],
+    ["config", "branch.issue/12.merge", "refs/heads/issue/12"],
+]
+
+
+@pytest.mark.parametrize(
+    "refs",
+    [
+        [],
+        ["refs/heads/issue/12"],
+        ["refs/remotes/origin/issue/12"],
+        ["refs/heads/issue/12", "refs/remotes/origin/issue/12"],
+    ],
+)
+def test_the_issue_branch_pushes_to_its_namesake_before_the_agent_starts(
+    env: dict[str, str], refs: list[str]
+) -> None:
+    # The sandbox keeps .git/config read-only for the agent, so `git push -u` could not record the
+    # upstream; the runner records it, and a plain `git push` then works.
+    git, launch = FakeGit(refs=refs), Launch()
+    assert run(env, git, launch) == 0
+    assert git.ran("config") == UPSTREAM
+    assert git.calls.index(UPSTREAM[0]) > git.calls.index(git.ran("switch")[0])
+    assert launch.argv is not None
+
+
+def test_an_author_is_told_to_push_without_setting_an_upstream() -> None:
+    prompt = fleetwright_agent.issue_prompt(12)
+    assert "plain `git push`" in prompt
+    assert "-u" not in prompt.replace("--", "")
+
+
+@pytest.mark.parametrize("step", ["status", "fetch", "switch", "config"])
 def test_a_git_failure_starts_nothing(env: dict[str, str], step: str) -> None:
     git, launch = FakeGit(fail=step), Launch()
     assert run(env, git, launch) == NOT_READY
