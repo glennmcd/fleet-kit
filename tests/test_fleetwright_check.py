@@ -36,10 +36,12 @@ class Fake:
         self.owners: dict[str, int] = {}  # uid by path; root unless named
         self.modes: dict[str, int] = {}  # mode by path; the home's mode unless named
         self.bwrap_ok = True
+        self.nested_ok = True  # a user namespace inside the sandbox keeps its capabilities
         self.login = "g26work" if role == "review" else "glennmcd"
         self.gh_version = "2.104.0"
         self.gh_slurp = True
         self.porcelain = ""
+        self.head: str | None = "main"  # the clone's branch; None when detached
         self.plugins: str | None = "fleetwright@fleetwright\ncc-practices@cc-practices\n"
         self.paths = {f"/home/{slot}/repo/.git"}
         self.home_mode = 0o700
@@ -62,8 +64,11 @@ class Fake:
             return 0, "https://github.com/glennmcd/commitment-tracker-ai.git\n"
         if "status" in command:
             return 0, self.porcelain
+        if "symbolic-ref" in command:
+            return (0, self.head + "\n") if self.head else (1, "")
         if command[:1] == ["bwrap"]:
-            return (0, "") if self.bwrap_ok else (1, "")
+            ok = self.nested_ok if "unshare" in command else self.bwrap_ok
+            return (0, "") if ok else (1, "")
         if command[:3] == ["claude", "plugin", "list"]:
             return (0, self.plugins) if self.plugins is not None else (1, "")
         return 1, ""
@@ -147,13 +152,79 @@ def test_the_sandbox_needs_bubblewrap_and_socat(tool: str) -> None:
     assert not ok and tool in detail
 
 
+PROBE = ["bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "true"]
+
+
+def nested_probes(fake: Fake) -> list[list[str]]:
+    return [c for c in fake.ran if c[:1] == ["bwrap"] and "unshare" in c]
+
+
+def without_open_sockets(fake: Fake) -> Fake:
+    settings = json.loads(managed_settings())
+    del settings["sandbox"]["network"]
+    fake.files[MANAGED] = json.dumps(settings)
+    return fake
+
+
 def test_bubblewrap_that_cannot_start_under_the_unit_fails_and_says_why() -> None:
     fake = Fake("author")
-    assert results(fake)["bubblewrap"] == (True, "starts a sandbox under this unit")
-    assert ["bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "true"] in fake.ran
     fake.bwrap_ok = False
     ok, detail = results(fake)["bubblewrap"]
     assert not ok and "apparmor" in detail.lower()
+    assert PROBE in fake.ran
+
+
+def test_with_unix_sockets_open_one_level_is_enough() -> None:
+    # No seccomp helper runs, so nothing needs a namespace inside the sandbox.
+    fake = Fake("author")
+    fake.nested_ok = False
+    ok, detail = results(fake)["bubblewrap"]
+    assert ok and "no seccomp helper" in detail
+    assert nested_probes(fake) == []
+
+
+def test_without_open_sockets_the_helpers_nested_namespace_is_probed_too() -> None:
+    fake = without_open_sockets(Fake("author"))
+    ok, detail = results(fake)["bubblewrap"]
+    assert ok and "seccomp helper" in detail
+    assert nested_probes(fake) == [
+        [
+            "bwrap",
+            "--unshare-user",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "unshare",
+            "--user",
+            "--map-root-user",
+            "true",
+        ]
+    ]
+
+
+def test_a_nested_namespace_without_capabilities_fails_and_names_both_fixes() -> None:
+    # Ubuntu's unpriv_bwrap profile: bwrap starts, but the seccomp helper fails every command.
+    fake = without_open_sockets(Fake("author"))
+    fake.nested_ok = False
+    ok, detail = results(fake)["bubblewrap"]
+    assert not ok
+    assert "allowAllUnixSockets" in detail and "vm-setup.md" in detail
+
+
+@pytest.mark.parametrize("text", [None, "{not json"])
+def test_unreadable_managed_settings_get_the_stricter_probe(text: str | None) -> None:
+    fake = Fake("author")
+    if text is None:
+        del fake.files[MANAGED]
+    else:
+        fake.files[MANAGED] = text
+    results(fake)
+    assert len(nested_probes(fake)) == 1
 
 
 def test_ready_managed_settings_pass() -> None:
@@ -266,14 +337,29 @@ def test_an_unlistable_plugin_set_fails() -> None:
     assert not results(fake)["plugins"][0]
 
 
-def test_a_dirty_or_missing_clone_fails() -> None:
-    fake = Fake()
-    fake.porcelain = " M README.md\n"
-    ok, detail = results(fake)["clone"]
-    assert not ok and "70" in detail
+def test_a_missing_clone_fails() -> None:
     fake = Fake()
     fake.paths = set()
     assert not results(fake)["clone"][0]
+
+
+def test_work_a_stopped_run_left_on_a_branch_passes_and_says_the_next_run_keeps_it() -> None:
+    # fleetwright_agent.settle_leftovers keeps it for a run on the same branch and stashes it
+    # otherwise.
+    fake = Fake("author")
+    fake.porcelain, fake.head = " M README.md\n", "issue/12"
+    ok, detail = results(fake)["clone"]
+    assert ok
+    assert "uncommitted work on issue/12" in detail
+    assert "a run on issue/12 keeps it" in detail and "any other run stashes it" in detail
+    assert "70" not in detail
+
+
+def test_work_left_on_a_detached_head_passes_and_says_the_next_run_stashes_it() -> None:
+    fake = Fake()
+    fake.porcelain, fake.head = "?? notes.txt\n", None
+    ok, detail = results(fake)["clone"]
+    assert ok and "detached head" in detail and "the next run stashes it" in detail
 
 
 def test_a_home_open_to_others_fails_and_an_admin_acl_does_not() -> None:

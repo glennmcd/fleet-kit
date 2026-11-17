@@ -14,7 +14,7 @@ It reports, one line each: the slot's name and role agree; the unattended switch
 the PATH, ``bwrap`` and ``socat`` included; bubblewrap can start a sandbox under the unit; ``gh`` has
 ``api --slurp`` (2.48 or later, which the allocator needs; Ubuntu's own package is older); a model key is set
 (its name, never its value); ``gh`` is signed in, as ``FLEETWRIGHT_REVIEWER_LOGIN`` on a review slot; the
-clone is there and clean; both plugins are installed; Claude Code's managed settings require the sandbox with
+clone is there, and what the next run does with any work a stopped run left in it; both plugins are installed; Claude Code's managed settings require the sandbox with
 no way out and run the stop switch and write guard from files only root can change; the home is closed to
 other users; the sandbox keeps the slot out of ``/var/lib/fleetwright`` and ``/etc/fleetwright``; the line is
 not stopped.
@@ -43,6 +43,25 @@ MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json"
 SAFETY_HOOKS = ("stop_line.py", "write_guard.py")
 # A sandbox as Claude Code starts one: a user namespace over a read-only root.
 BWRAP_PROBE = ("bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "true")
+# One level deeper, as Claude Code's seccomp helper goes: a user namespace inside the sandbox that writes
+# its own setgroups and uid map. Ubuntu's unpriv_bwrap AppArmor profile lets the first level through and
+# stops this one.
+BWRAP_NESTED_PROBE = (
+    "bwrap",
+    "--unshare-user",
+    "--unshare-pid",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+    "unshare",
+    "--user",
+    "--map-root-user",
+    "true",
+)
 PLUGINS = ("fleetwright", "cc-practices")
 MODEL_KEYS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 ROLES = {"author": re.compile(r"agent[0-9]{2}"), "review": re.compile(r"review[0-9]{2}")}
@@ -94,8 +113,21 @@ def _tools(m: Machine) -> Result:
     return "tools", True, ", ".join(TOOLS)
 
 
+def _sockets_open(m: Machine) -> bool:
+    """Whether the managed settings open Unix sockets, so Claude Code runs no seccomp helper.
+
+    Unreadable or invalid settings count as closed, which asks for the stricter probe.
+    """
+    try:
+        settings = json.loads(m.read(MANAGED_SETTINGS) or "")
+        return settings["sandbox"]["network"]["allowAllUnixSockets"] is True
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
 def _bubblewrap(m: Machine) -> Result:
-    """Claude Code's sandbox needs bubblewrap to start under this unit's restrictions, as the slot."""
+    """Claude Code's sandbox needs bubblewrap to start under this unit's restrictions, as the slot, and,
+    when its seccomp helper runs, a user namespace inside the sandbox that keeps its capabilities."""
     code, _ = m.run(list(BWRAP_PROBE))
     if code != 0:
         return (
@@ -104,7 +136,27 @@ def _bubblewrap(m: Machine) -> Result:
             "bwrap cannot start a sandbox here: on Ubuntu, AppArmor blocks unprivileged user namespaces "
             "until /etc/apparmor.d/bwrap allows them (docs/vm-setup.md)",
         )
-    return "bubblewrap", True, "starts a sandbox under this unit"
+    if _sockets_open(m):
+        return (
+            "bubblewrap",
+            True,
+            "starts a sandbox under this unit (Unix sockets open: no seccomp helper)",
+        )
+    code, _ = m.run(list(BWRAP_NESTED_PROBE))
+    if code != 0:
+        return (
+            "bubblewrap",
+            False,
+            "bwrap starts, but a user namespace inside it gets no capabilities, so Claude Code's seccomp "
+            "helper fails every command (Ubuntu's unpriv_bwrap AppArmor profile): set "
+            "sandbox.network.allowAllUnixSockets in the managed settings, or replace the profile "
+            "(docs/vm-setup.md)",
+        )
+    return (
+        "bubblewrap",
+        True,
+        "starts a sandbox and the nested namespace Claude Code's seccomp helper needs",
+    )
 
 
 def _root_only(m: Machine, path: str) -> bool:
@@ -212,9 +264,17 @@ def _clone(m: Machine) -> Result:
     code, porcelain = m.run(["git", "-C", clone, "status", "--porcelain"])
     if code != 0:
         return "clone", False, f"git status failed in {clone}"
-    if porcelain.strip():
-        return "clone", False, f"{clone} has uncommitted changes: the runner exits 70"
-    return "clone", True, f"{clone}, clean, origin {url.strip()}"
+    if not porcelain.strip():
+        return "clone", True, f"{clone}, clean, origin {url.strip()}"
+    # Work a stopped run left. The runner (fleetwright_agent.settle_leftovers) keeps it for a run on the
+    # same branch and stashes it for any other, so it holds nothing up; say which will happen.
+    code, head = m.run(["git", "-C", clone, "symbolic-ref", "--short", "-q", "HEAD"])
+    branch = head.strip() if code == 0 else ""
+    if branch:
+        fate = f"a run on {branch} keeps it, any other run stashes it"
+    else:
+        branch, fate = "a detached head", "the next run stashes it"
+    return "clone", True, f"{clone}, uncommitted work on {branch}: {fate} (git stash list)"
 
 
 def _plugins(m: Machine) -> Result:

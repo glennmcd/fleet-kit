@@ -84,6 +84,7 @@ change it.
 | `sandbox.enabled` | every Bash command, and every process it starts, runs in bubblewrap: writes only in the clone, `/tmp` and `~/.cache`, `~/.local/share/uv` and `~/.bun`; `.claude` settings and hooks, `.git` hooks and config, and `~/.claude` stay read-only |
 | `sandbox.failIfUnavailable` | without a working bubblewrap, Claude Code stops instead of running commands unsandboxed |
 | `sandbox.allowUnsandboxedCommands: false` | no retry outside the sandbox. Without it, a refused command may be retried unsandboxed, and under `--dangerously-skip-permissions` that retry needs no prompt |
+| `sandbox.network.allowAllUnixSockets` | skips Claude Code's seccomp helper, which blocks Unix sockets from a user namespace nested inside the sandbox. Ubuntu's `unpriv_bwrap` AppArmor profile strips that namespace's capabilities, and then every command fails. A command can reach the sockets its OS user could reach anyway (the dbus system bus, the journal, cups, snapd); the file limits still hold |
 | `permissions.deny` | the file tools, which the sandbox does not cover, may not edit `~/.claude`, the clone's `.claude` settings and hooks, or `.git` hooks and config. Deny rules hold in every permission mode |
 | `hooks` | the stop switch and the write guard, run from `/opt/fleetwright`, which root owns. The plugin's copies sit in the slot's own `~/.claude`; these do not |
 
@@ -95,10 +96,15 @@ sandbox off.
 The sandbox keeps `.git/config` read-only, so `git push -u` cannot record an upstream. `fleetwright_agent.py` sets
 `issue/<n>`'s upstream before the agent starts, and the agent pushes with a plain `git push`.
 
-The slot check reports both halves: `bubblewrap` (it can start a sandbox under the unit's restrictions, as the
-slot) and `managed settings` (the file and both hook scripts are root's alone, and the sandbox is enabled,
-required and without a way out). Install `bubblewrap` and `socat` first; on Ubuntu, AppArmor needs a profile that
-lets bubblewrap make a user namespace ([vm-setup.md](vm-setup.md)).
+The slot check reports both halves. `bubblewrap`: it can start a sandbox under the unit's restrictions, as the
+slot, and, when the managed settings leave Unix sockets closed, a user namespace inside it that keeps its
+capabilities, as the seccomp helper needs. `managed settings`: the file, both hook scripts and their directory are
+root's alone, and the sandbox is enabled, required and without a way out. Install `bubblewrap` and `socat` first
+([vm-setup.md](vm-setup.md)).
+
+On a machine where nothing else uses bubblewrap, such as a dedicated cloud VM, the seccomp helper can be kept:
+replace Ubuntu's `bwrap-userns-restrict` profile with the one Claude Code's docs give, take `allowAllUnixSockets`
+out of `managed_settings()`, and the `bubblewrap` check then probes the nested namespace.
 
 ## OS user per agent (what holds)
 

@@ -379,6 +379,13 @@ def test_every_bash_command_runs_in_the_sandbox_with_no_way_out() -> None:
     assert sandbox["allowUnsandboxedCommands"] is False
 
 
+def test_the_sandbox_skips_the_seccomp_helper_that_ubuntus_apparmor_stops() -> None:
+    # Ubuntu's unpriv_bwrap profile strips capabilities from everything bwrap runs, so Claude
+    # Code's seccomp helper cannot make its nested namespace and every command fails. With Unix
+    # sockets open the helper is not used; the sandbox's file limits stay.
+    assert settings()["sandbox"]["network"] == {"allowAllUnixSockets": True}
+
+
 def test_the_sandbox_and_the_write_guard_allow_the_same_directories() -> None:
     allow = settings()["sandbox"]["filesystem"]["allowWrite"]
     assert allow[0] == "/tmp"

@@ -439,7 +439,8 @@ def managed_settings(kit: str = DEFAULT_KIT) -> str:
     """Claude Code's managed settings for every agent on the machine.
 
     Bash commands, and whatever they start, run in Claude Code's sandbox: writes only in the clone, /tmp and
-    ``HOME_WRITE``, with no retry outside it. The file tools, which the sandbox does not cover, may not edit
+    ``HOME_WRITE``, with no retry outside it. Unix sockets stay open, so the sandbox works under Ubuntu's
+    AppArmor confinement of bubblewrap. The file tools, which the sandbox does not cover, may not edit
     the agent's own safety settings. The stop switch and the write guard run from the kit, which root owns,
     so no slot can edit or remove them. The write guard's matcher is the plugin's (a test keeps them equal).
     """
@@ -460,6 +461,11 @@ def managed_settings(kit: str = DEFAULT_KIT) -> str:
             "failIfUnavailable": True,
             "allowUnsandboxedCommands": False,
             "filesystem": {"allowWrite": ["/tmp", *(f"~/{d}" for d in HOME_WRITE)]},
+            # Skips Claude Code's seccomp helper, which blocks Unix sockets from a nested user namespace.
+            # Ubuntu's unpriv_bwrap AppArmor profile strips that namespace's capabilities, and then every
+            # command fails. Without the helper, a command reaches the sockets its OS user could reach
+            # anyway; the file limits above still hold.
+            "network": {"allowAllUnixSockets": True},
         },
         "permissions": {
             "deny": [

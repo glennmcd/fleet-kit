@@ -40,6 +40,12 @@ sysctl kernel.apparmor_restrict_unprivileged_userns
 ls /etc/apparmor.d/ | grep -i bwrap
 ```
 
+Ubuntu 26.04 ships `bwrap-userns-restrict`, which lets bubblewrap create its namespace but strips the
+capabilities of everything bubblewrap runs (`aa-status` lists `bwrap` and `unpriv_bwrap`). With it in place,
+nothing more is needed: the managed settings open Unix sockets (`allowAllUnixSockets`), so Claude Code runs no
+helper that needs those capabilities. Leave the profile alone, since desktop programs (image loaders, document
+viewers) rely on it.
+
 If the first prints `= 1` and the second prints nothing, add a profile for bubblewrap:
 
 ```bash
@@ -56,8 +62,9 @@ EOF
 sudo apparmor_parser -r /etc/apparmor.d/bwrap
 ```
 
-Step 6's slot check shows whether bubblewrap starts under a slot's unit. If it fails while a profile listed above
-is in place, that profile is the one to fix.
+Step 6's slot check shows whether bubblewrap starts under a slot's unit and, if Unix sockets are ever closed
+again, whether the namespace inside it keeps its capabilities. Its `bubblewrap` line names the fix when either
+fails.
 
 **`gh`**, from GitHub's repository:
 
