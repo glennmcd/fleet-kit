@@ -552,7 +552,7 @@ sequenceDiagram
 ## The watchdog
 
 [`scripts/fleetwright_watchdog.py`](../scripts/fleetwright_watchdog.py) is a timer job with no AI in it. Every 5 minutes
-it looks for four things the fleet cannot see about itself, as the allocator's user:
+it looks for five things the fleet cannot see about itself, as the allocator's user:
 
 | Check | What it catches | What it does |
 |---|---|---|
@@ -560,6 +560,7 @@ it looks for four things the fleet cannot see about itself, as the allocator's u
 | `stalled` | a running slot that has written no journal line for `stall_minutes` (15) | reports it; `systemctl stop` on the unit frees the slot |
 | `red-main` | a failed check on the default branch's head commit | sets the stop flag, since every agent would branch from a broken main |
 | `stuck-pr` | an open `issue/<n>` pull request unchanged for `stuck_pr_minutes` (120) that no running slot holds | reports what it waits for: a fix round, a review, its checks, or a person to merge it |
+| `wrong-branch` | an author run that pushed a branch other than its own `issue/<n>`; a branch the App changed while no run held its issue, or that is not an `issue/<n>` branch | reports it once, with the slot when the pre-push log names it |
 
 Each finding is one journal line that starts with `caught` (a problem) or `missed` (the check could not be
 made, so a problem may have gone unseen). The last line is the run's result:
@@ -580,7 +581,8 @@ systemctl start fleetwright-watchdog                                # fleetwrigh
 systemctl stop fleetwright-watchdog.timer                           # fleetwright-admin: pause it
 ```
 
-The stop flag is the only thing it writes. It starts and stops no unit and writes nothing to GitHub. A red
+The stop flag, and the wrong-branch check's read position in `/var/lib/fleetwright-allocator/watchdog.json`, are
+the only things it writes. It starts and stops no unit and writes nothing to GitHub. A red
 main stops the line once: a line that is already stopped keeps its note, and a person clears the flag
 (`fleetwright_stop.py clear`) after main is green. If the flag is cleared while main is still red, the next run
 sets it again. A cancelled check is not red, and a check that ran again counts by its newest run: a failure followed
@@ -590,12 +592,38 @@ The stall check reads the journal, which the allocator's user cannot. The unit a
 group for this run only (`SupplementaryGroups=`). The limits are optional keys in `/etc/fleetwright/fleetwright.json`:
 
 ```json
-"watchdog": {"stall_minutes": 15, "stuck_pr_minutes": 120}
+"watchdog": {"stall_minutes": 15, "stuck_pr_minutes": 120, "app_bot": "g26work-fleet-authors[bot]",
+             "wrong_branch_slack_seconds": 120, "wrong_branch_first_lookback_hours": 24}
 ```
 
 A long command is not a stall: the `wait_cap` hook holds an agent's waits to about 5 minutes, well under
 `stall_minutes`. An approved pull request that nobody merges for two hours is reported as stuck on every
 run until it is merged; raise `stuck_pr_minutes` if that is noise.
+
+### Wrong-branch
+
+Every author slot pushes as the same App, and GitHub grants write access per repository, not per branch, so
+nothing on GitHub stops one slot from pushing to another's `issue/<n>`. The check finds it afterwards, from two
+sources:
+
+- **The slots' pre-push hook.** `fleetwright_slot.py add` points each author clone at the root-owned
+  [`git-hooks/`](../git-hooks) (`core.hooksPath`). Its `pre-push` writes one journal line per ref pushed, tagged
+  `fleetwright-push`; journald adds the slot's unit and run id. The check matches each line to the `token minted`
+  or `token renewed` line of the same run, written by root (`_UID=0`), which names the assignment, and catches a
+  push to anything but that assignment's `issue/<n>`. A slot can skip the hook (`git push --no-verify`), so this
+  catches mistakes, not evasion.
+- **GitHub's activity log.** With `app_bot` set, the check reads every ref the App created, pushed, force-pushed or
+  deleted (`GET /repos/{owner}/{repo}/activity`), which no agent can hide. It catches a change to a branch that is
+  not `issue/<n>`, or to an `issue/<n>` that no run held at the time (from the token lines, with
+  `wrong_branch_slack_seconds` either side). It cannot tell which of several running slots made a change.
+
+```text
+caught wrong-branch: agent02 (fix 14) pushed refs/heads/issue/12 at 2027-01-15 07:50 UTC (its pre-push log); `systemctl stop fleetwright-agent@agent02` ends the run
+caught wrong-branch: the App pushed refs/heads/issue/31 at 2027-01-15 07:50 UTC while no slot held issue 31 (GitHub activity)
+```
+
+It reports and does nothing else. Each push is reported once; a first pass looks back
+`wrong_branch_first_lookback_hours`. Without `app_bot` only the pre-push side runs.
 
 ## The dashboard
 

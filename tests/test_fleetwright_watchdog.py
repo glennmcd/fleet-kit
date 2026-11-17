@@ -36,6 +36,7 @@ class FakeGitHub:
         self.main = main if main is not None else [check("backend")]
         self.comments = comments or {}
         self.fail = fail
+        self.activity: list[dict[str, Any]] = []  # GitHub's repository activity log
         self.calls: list[list[str]] = []
 
     def __call__(self, args: Sequence[str]) -> str:
@@ -53,6 +54,8 @@ class FakeGitHub:
             return json.dumps({"content": base64.b64encode(body).decode()})
         if path.endswith("/comments"):
             return json.dumps([self.comments.get(int(path.split("/")[-2]), [])])
+        if "/activity?" in path:
+            return json.dumps([self.activity])
         raise AssertionError(f"unexpected gh call {args}")
 
 
@@ -119,18 +122,49 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+class FakeJournal:
+    """journalctl -o json: entries matched by SYSLOG_IDENTIFIER= and _UID=, read after a cursor."""
+
+    def __init__(self, entries: list[dict[str, Any]] | None = None, fail: str = "") -> None:
+        self.entries = entries or []
+        self.fail = fail
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: Sequence[str]) -> list[dict[str, Any]]:
+        args = list(args)
+        self.calls.append(args)
+        if self.fail and any(self.fail in a for a in args):
+            raise OSError("journalctl failed")
+        matches = [a.split("=", 1) for a in args if "=" in a and not a.startswith("-")]
+        found = [e for e in self.entries if all(e.get(k) == v for k, v in matches)]
+        if "--after-cursor" in args:
+            cursor = args[args.index("--after-cursor") + 1]
+            cursors = [e["__CURSOR"] for e in found]
+            found = found[cursors.index(cursor) + 1 :] if cursor in cursors else found
+        return found
+
+
 def run(
     fleet: Path,
     gh: FakeGitHub | None = None,
     systemd: FakeSystemd | None = None,
     journal: Mapping[str, float | None] | None = None,
+    entries: FakeJournal | None = None,
 ) -> int:
     last = journal or {}
     return fleetwright_watchdog.main(
-        ["--config", str(fleet / "fleetwright.json"), "--fleetwright-dir", str(fleet)],
+        [
+            "--config",
+            str(fleet / "fleetwright.json"),
+            "--fleetwright-dir",
+            str(fleet),
+            "--state",
+            str(fleet / "watchdog.json"),
+        ],
         gh=gh or FakeGitHub(),
         systemctl=systemd or FakeSystemd(),
         journal=lambda unit: last.get(unit, NOW - 60),
+        journal_entries=entries or FakeJournal(),
         now=lambda: NOW,
     )
 
@@ -408,3 +442,268 @@ def test_the_real_journal_reader_answers_none_when_there_is_nothing(
         subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout)
     )
     assert fleetwright_watchdog._journal("fleetwright-agent@agent01") is None
+
+
+# --- wrong-branch: a push that is not the run's own ---------------------------------------------
+
+BOT = "g26work-fleet-authors[bot]"
+T = NOW - 600  # ten minutes ago
+
+
+def with_app_bot(fleet: Path, **extra: Any) -> None:
+    path = fleet / "fleetwright.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["watchdog"] = {"app_bot": BOT, **extra}
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def stamp(t: float) -> str:
+    return str(int(t * 1_000_000))
+
+
+def token_line(
+    kind: str,
+    slot: str,
+    assignment: str | None,
+    t: float,
+    invocation: str,
+    uid: str = "0",
+) -> dict[str, Any]:
+    held = f'assignment="{assignment}"' if assignment else "assignment=none"
+    if kind == "renewed":
+        message = f"token renewed slot={slot} {held} mode=write invocation={invocation} id=sha256:x"
+        unit, inv = "fleetwright-token-refresh.service", "refresh-run"
+    else:
+        message = f"token {kind} slot={slot} {held} mode=write id=sha256:x"
+        unit, inv = f"fleetwright-agent@{slot}.service", invocation
+    return {
+        "SYSLOG_IDENTIFIER": "fleetwright-token",
+        "_UID": uid,
+        "_SYSTEMD_UNIT": unit,
+        "_SYSTEMD_INVOCATION_ID": inv,
+        "MESSAGE": message,
+        "__REALTIME_TIMESTAMP": stamp(t),
+        "__CURSOR": f"t-{invocation}-{kind}-{t}",
+    }
+
+
+def push_line(slot: str, ref: str, t: float, invocation: str, n: int = 0) -> dict[str, Any]:
+    return {
+        "SYSLOG_IDENTIFIER": "fleetwright-push",
+        "_UID": "1001",
+        "_SYSTEMD_UNIT": f"fleetwright-agent@{slot}.service",
+        "_SYSTEMD_INVOCATION_ID": invocation,
+        "MESSAGE": f"ref={ref} sha={'b' * 40}",
+        "__REALTIME_TIMESTAMP": stamp(t),
+        "__CURSOR": f"p-{n}",
+    }
+
+
+def activity(
+    ref: str, t: float, kind: str = "push", actor: str = BOT, n: int = 1
+) -> dict[str, Any]:
+    from datetime import UTC, datetime
+
+    return {
+        "id": n,
+        "ref": ref,
+        "timestamp": datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "activity_type": kind,
+        "actor": {"login": actor},
+    }
+
+
+def two_runs() -> list[dict[str, Any]]:
+    """agent01 on issue 12 and agent02 on a fix round for issue 14, both started 30 minutes ago."""
+    return [
+        token_line("minted", "agent01", "issue 12", NOW - 1800, "inv1"),
+        token_line("minted", "agent02", "fix 14", NOW - 1800, "inv2"),
+    ]
+
+
+def wrong(capsys: pytest.CaptureFixture[str]) -> list[str]:
+    return [ln for ln in lines(capsys) if "wrong-branch" in ln]
+
+
+@pytest.mark.parametrize(
+    ("slot", "ref", "invocation"),
+    [("agent01", "refs/heads/issue/12", "inv1"), ("agent02", "refs/heads/issue/14", "inv2")],
+)
+def test_a_run_that_pushes_its_own_branch_is_clean(
+    fleet: Path, capsys: pytest.CaptureFixture[str], slot: str, ref: str, invocation: str
+) -> None:
+    journal = FakeJournal([*two_runs(), push_line(slot, ref, T, invocation)])
+    gh = FakeGitHub()
+    gh.activity = [activity(ref, T)]
+    with_app_bot(fleet)
+    assert run(fleet, gh=gh, entries=journal) == 0
+    assert wrong(capsys) == []
+
+
+def test_a_push_to_another_slots_branch_is_caught_from_the_pre_push_log(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    journal = FakeJournal([*two_runs(), push_line("agent02", "refs/heads/issue/12", T, "inv2")])
+    assert run(fleet, entries=journal) == 0
+    assert wrong(capsys) == [
+        "caught wrong-branch: agent02 (fix 14) pushed refs/heads/issue/12 at 2027-01-15 07:50 UTC "
+        "(its pre-push log); `systemctl stop fleetwright-agent@agent02` ends the run"
+    ]
+
+
+def test_a_token_line_a_slot_wrote_itself_is_not_believed(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # agent02 logs a fake mint for issue 12 from its own user; only root's lines count.
+    forged = token_line("minted", "agent02", "issue 12", NOW - 900, "inv2", uid="1002")
+    journal = FakeJournal(
+        [*two_runs(), forged, push_line("agent02", "refs/heads/issue/12", T, "inv2")]
+    )
+    run(fleet, entries=journal)
+    assert len(wrong(capsys)) == 1
+    assert journal.calls[0][:2] == ["SYSLOG_IDENTIFIER=fleetwright-token", "_UID=0"]
+
+
+def test_a_renewal_names_the_run_whose_mint_is_out_of_reach(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    journal = FakeJournal(
+        [
+            token_line("renewed", "agent01", "issue 12", NOW - 1200, "inv9"),
+            push_line("agent01", "refs/heads/issue/12", T, "inv9"),
+        ]
+    )
+    run(fleet, entries=journal)
+    assert wrong(capsys) == []
+
+
+def test_a_push_from_a_run_with_no_token_line_is_missed(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    journal = FakeJournal([push_line("agent03", "refs/heads/issue/3", T, "unknown")])
+    assert run(fleet, entries=journal) == 1
+    (line,) = wrong(capsys)
+    assert line.startswith("missed wrong-branch: agent03 pushed refs/heads/issue/3")
+
+
+def test_github_shows_a_push_no_run_held(fleet: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    gh = FakeGitHub()
+    gh.activity = [activity("refs/heads/issue/31", T)]
+    with_app_bot(fleet)
+    run(fleet, gh=gh, entries=FakeJournal(two_runs()))
+    assert wrong(capsys) == [
+        "caught wrong-branch: the App pushed refs/heads/issue/31 at 2027-01-15 07:50 UTC "
+        "while no slot held issue 31 (GitHub activity)"
+    ]
+    (call,) = [c for c in gh.calls if "/activity?" in c[-1]]
+    assert call[-1] == (
+        f"repos/{REPO}/activity?per_page=100&time_period=day&actor=g26work-fleet-authors%5Bbot%5D"
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "verb"),
+    [
+        ("push", "pushed"),
+        ("force_push", "force-pushed"),
+        ("branch_creation", "created"),
+        ("branch_deletion", "deleted"),
+    ],
+)
+def test_github_shows_a_ref_that_is_not_an_issue_branch(
+    fleet: Path, capsys: pytest.CaptureFixture[str], kind: str, verb: str
+) -> None:
+    gh = FakeGitHub()
+    gh.activity = [activity("refs/heads/scratch", T, kind=kind)]
+    with_app_bot(fleet)
+    run(fleet, gh=gh, entries=FakeJournal(two_runs()))
+    assert wrong(capsys) == [
+        f"caught wrong-branch: the App {verb} refs/heads/scratch at 2027-01-15 07:50 UTC, "
+        "not an issue/<n> branch (GitHub activity)"
+    ]
+
+
+def test_a_push_just_after_the_run_ended_is_within_the_slack(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ended = [*two_runs(), token_line("revoked", "agent01", "issue 12", T - 60, "inv1")]
+    gh = FakeGitHub()
+    gh.activity = [activity("refs/heads/issue/12", T)]  # 60 s after the revoke; slack is 120 s
+    with_app_bot(fleet)
+    run(fleet, gh=gh, entries=FakeJournal(ended))
+    assert wrong(capsys) == []
+    gh.activity = [activity("refs/heads/issue/12", T + 600, n=2)]
+    run(fleet, gh=gh, entries=FakeJournal(ended))
+    assert len(wrong(capsys)) == 1
+
+
+def test_other_actors_on_github_are_not_the_fleets(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub()
+    gh.activity = [activity("refs/heads/scratch", T, actor="glennmcd")]
+    with_app_bot(fleet)
+    run(fleet, gh=gh, entries=FakeJournal(two_runs()))
+    assert wrong(capsys) == []
+
+
+def test_each_push_is_reported_once(fleet: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    journal = FakeJournal([*two_runs(), push_line("agent02", "refs/heads/issue/12", T, "inv2")])
+    gh = FakeGitHub()
+    gh.activity = [activity("refs/heads/issue/31", T)]
+    with_app_bot(fleet)
+    run(fleet, gh=gh, entries=journal)
+    assert len(wrong(capsys)) == 2
+    run(fleet, gh=gh, entries=journal)
+    assert wrong(capsys) == []
+    pushes = [c for c in journal.calls if "SYSLOG_IDENTIFIER=fleetwright-push" in c]
+    assert pushes[-1][-2:] == ["--after-cursor", "p-0"]
+
+
+def test_a_first_pass_looks_back_a_day(fleet: Path) -> None:
+    journal = FakeJournal()
+    run(fleet, entries=journal)
+    pushes = [c for c in journal.calls if "SYSLOG_IDENTIFIER=fleetwright-push" in c]
+    assert pushes[0][-2:] == ["--since", f"@{int(NOW - 24 * 3600)}"]
+
+
+def test_without_an_app_bot_github_is_not_asked(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub()
+    assert run(fleet, gh=gh) == 0
+    assert not any("/activity?" in c[-1] for c in gh.calls)
+    assert lines(capsys) == ["watchdog: clean"]
+
+
+def test_sources_it_cannot_read_are_missed_and_the_rest_still_runs(
+    fleet: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub(fail="/activity?")
+    with_app_bot(fleet)
+    assert run(fleet, gh=gh, entries=FakeJournal(fail="fleetwright-push")) == 1
+    out = wrong(capsys)
+    assert any(ln.startswith("missed wrong-branch: the pre-push log") for ln in out)
+    assert any(ln.startswith("missed wrong-branch: GitHub activity") for ln in out)
+
+
+def test_the_app_bot_must_be_a_bot_login(fleet: Path) -> None:
+    with_app_bot(fleet)
+    path = fleet / "fleetwright.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["watchdog"]["app_bot"] = "glennmcd"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert run(fleet) == 2
+
+
+def test_the_real_entry_reader_parses_journalctl_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, '{"MESSAGE": "a"}\nnot json\n{"MESSAGE": "b"}\n')
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    got = fleetwright_watchdog._journal_entries(["SYSLOG_IDENTIFIER=fleetwright-push"])
+    assert got == [{"MESSAGE": "a"}, {"MESSAGE": "b"}]
+    assert seen[0][:4] == ["journalctl", "-o", "json", "--no-pager"]

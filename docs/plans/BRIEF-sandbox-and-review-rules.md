@@ -2,8 +2,8 @@
 
 Status, 2026-11-17: approved. Part A is built and rolled out on m3800 (with `allowAllUnixSockets`, since
 Ubuntu's own bwrap profile stops Claude Code's seccomp helper). Part C's App tokens are built; the token folders
-are `/run/fleetwright/<unit>/` rather than `/run/fleetwright-<slot>/`. Part C's wrong-branch check and Part B are
-not built.
+are `/run/fleetwright/<unit>/` rather than `/run/fleetwright-<slot>/`. Part C's wrong-branch check is built too; it
+skips the GitHub side when `watchdog.app_bot` is not set. Part B is not built.
 
 This brief makes three changes. Part A puts every slot's Bash commands inside Claude Code's bubblewrap sandbox,
 moves the two safety hooks into a root-owned managed settings file, and **keeps `write_guard.py`** as the layer

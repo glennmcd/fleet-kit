@@ -386,6 +386,22 @@ def test_an_app_bots_noreply_address_is_a_valid_commit_address() -> None:
     ] in commands
 
 
+def test_an_author_clone_logs_its_pushes_through_the_kits_hooks() -> None:
+    # Root-owned hooks: the slot cannot edit them, and the sandbox keeps .git/config read-only.
+    hooks = ["git", "-C", "/home/agent01/repo", "config", "core.hooksPath", "/srv/kit/git-hooks"]
+    assert ["runuser", "-u", "agent01", "--", *hooks] in setup_commands(
+        "agent01", REPO, EMAIL, kit="/srv/kit"
+    )
+    assert not any("core.hooksPath" in c for c in setup_commands("review01", REPO))
+    assert (ROOT / "git-hooks" / "pre-push").is_file()
+
+
+def test_add_takes_the_kit_for_the_hooks(capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["add", "agent01", "--repo", REPO, "--git-email", EMAIL, "--kit", "/srv/kit"]
+    assert fleetwright_slot.main(argv) == 0
+    assert "core.hooksPath /srv/kit/git-hooks" in capsys.readouterr().out
+
+
 def test_an_author_clone_pushes_with_the_token_file_and_a_reviewer_with_gh() -> None:
     author = setup_commands("agent01", REPO, EMAIL)
     helper = next(c for c in author if "credential.helper" in c)

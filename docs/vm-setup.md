@@ -207,8 +207,12 @@ gh api 'users/<app>%5Bbot%5D' --jq '"\(.id)+\(.login)@users.noreply.github.com"'
 
 ```json
 {"repo": "<owner>/<name>", "slots": ["agent01", "agent02"], "review_slots": ["review01"],
- "lanes": {"feature": 3, "fix": 2, "tooling": 1}}
+ "lanes": {"feature": 3, "fix": 2, "tooling": 1},
+ "watchdog": {"app_bot": "<app>[bot]"}}
 ```
+
+`watchdog.app_bot` is the App's bot login; with it, the watchdog also checks every ref the App changed on
+GitHub against the issue each run held ([control-plane.md](control-plane.md#wrong-branch)).
 
 ## 5. Each slot's Claude Code
 

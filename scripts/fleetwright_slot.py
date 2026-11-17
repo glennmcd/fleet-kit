@@ -616,7 +616,9 @@ AUTHOR_CREDENTIAL_HELPER = (
 )
 
 
-def setup_commands(slot: str, repo: str, email: str | None = None) -> list[list[str]]:
+def setup_commands(
+    slot: str, repo: str, email: str | None = None, kit: str = DEFAULT_KIT
+) -> list[list[str]]:
     """What root runs to create the slot, in order. Each is an argument list, never a shell string.
 
     ``email`` is the address the slot commits at; an author slot must have one, a review slot never commits.
@@ -661,6 +663,12 @@ def setup_commands(slot: str, repo: str, email: str | None = None) -> list[list[
                 [*as_slot, "git", "-C", clone, "config", "user.email", email],
             ]
             if email
+            else []
+        ),
+        # An author's pushes are logged for the watchdog's wrong-branch check, by hooks root owns.
+        *(
+            [[*as_slot, "git", "-C", clone, "config", "core.hooksPath", f"{kit}/git-hooks"]]
+            if AUTHOR_RE.fullmatch(slot)
             else []
         ),
     ]
@@ -744,8 +752,16 @@ def init(admins: Sequence[str], kit: str, dest: str, apply: bool, run: Run, is_r
     return 0
 
 
-def add(slot: str, repo: str, email: str | None, apply: bool, run: Run, is_root: bool) -> int:
-    commands = setup_commands(slot, repo, email)
+def add(
+    slot: str,
+    repo: str,
+    email: str | None,
+    apply: bool,
+    run: Run,
+    is_root: bool,
+    kit: str = DEFAULT_KIT,
+) -> int:
+    commands = setup_commands(slot, repo, email, kit)
     unit = "fleetwright-review" if REVIEW_RE.fullmatch(slot) else "fleetwright-agent"
     check = "fleetwright-check-review" if REVIEW_RE.fullmatch(slot) else "fleetwright-check-agent"
     if not apply:
@@ -789,6 +805,9 @@ def main(argv: list[str] | None = None, run: Run = _run, is_root: bool | None = 
         help="the address the slot commits at (needed for an author slot): "
         "the noreply address of the account whose token pushes",
     )
+    p.add_argument(
+        "--kit", default=DEFAULT_KIT, help="where fleetwright is installed (its git-hooks)"
+    )
     p.add_argument("--apply", action="store_true", help="run the commands instead of printing them")
     u = sub.add_parser("unit", help="print the unit files")
     u.add_argument("--kit", default=DEFAULT_KIT)
@@ -811,7 +830,11 @@ def main(argv: list[str] | None = None, run: Run = _run, is_root: bool | None = 
         root = _is_root() if is_root is None else is_root
         if args.command == "init":
             return init(args.admin, args.kit, args.dest, args.apply, run, root)
-        return add(args.slot, args.repo, args.git_email, args.apply, run, root)
+        if not KIT_RE.fullmatch(args.kit):
+            raise ValueError(
+                f"kit {args.kit!r}: give an absolute path of letters, digits, '.', '_' and '-'"
+            )
+        return add(args.slot, args.repo, args.git_email, args.apply, run, root, args.kit)
     except ValueError as exc:
         print(f"fleetwright_slot: {exc}", file=sys.stderr)
         return 2

@@ -1,0 +1,9 @@
+#!/bin/sh
+# fleetwright: logs every ref an author slot pushes, one journal line each, for the watchdog's wrong-branch
+# check (scripts/fleetwright_watchdog.py). journald adds the slot's unit and run as fields the slot cannot
+# forge. It never blocks a push. Author clones use it through core.hooksPath, set by fleetwright_slot.py add;
+# root owns this file, so no slot can change it.
+while read -r local_ref local_sha remote_ref remote_sha; do
+    logger -t fleetwright-push "ref=$remote_ref sha=$local_sha" 2>/dev/null || true
+done
+exit 0

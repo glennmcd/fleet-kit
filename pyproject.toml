@@ -57,6 +57,7 @@ files = [
   "scripts/fleetwright_token.py",
   "tests/test_fleetwright_token.py",
   "tests/test_gh_shim.py",
+  "tests/test_pre_push_hook.py",
   "tests/test_evasion_write_guard.py",
   "tests/test_evasion_kit.py",
   "tests/test_evasion_silent_skips.py",

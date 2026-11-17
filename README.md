@@ -150,6 +150,6 @@ or new issue from GitHub, by weighted lanes. Root only sets the machine up (`fle
 slot); after that the `fleetwright-admin` group runs the fleet through a polkit rule, without reading its tokens, and
 [`fleetwright_check.py`](scripts/fleetwright_check.py) checks a slot from a unit that runs as it.
 [`fleetwright_watchdog.py`](scripts/fleetwright_watchdog.py), also on a timer and with no AI, reports stalled agents, stuck
-pull requests and failed units, and stops the line when main is red. The design (hooks for clear
+pull requests, failed units and pushes to a branch the run did not hold, and stops the line when main is red. The design (hooks for clear
 refusals, an OS user per agent for the boundary that holds) and what the write guard cannot see:
 [docs/control-plane.md](docs/control-plane.md).
