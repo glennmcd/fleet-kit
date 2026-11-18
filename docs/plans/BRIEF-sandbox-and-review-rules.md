@@ -1,9 +1,9 @@
 # Brief: Claude Code's sandbox on the slots, and GitHub's review rules for the verdict
 
 Status, 2026-11-17: approved. Part A is built and rolled out on m3800 (with `allowAllUnixSockets`, since
-Ubuntu's own bwrap profile stops Claude Code's seccomp helper). Part C's App tokens are built; the token folders
-are `/run/fleetwright/<unit>/` rather than `/run/fleetwright-<slot>/`. Part C's wrong-branch check is built too; it
-skips the GitHub side when `watchdog.app_bot` is not set. Part B is not built.
+Ubuntu's own bwrap profile stops Claude Code's seccomp helper). Part C's App tokens and wrong-branch check are built;
+its commands below match the code as built (2026-11-18), and its rollout on m3800 is in progress. Part B is not
+built.
 
 This brief makes three changes. Part A puts every slot's Bash commands inside Claude Code's bubblewrap sandbox,
 moves the two safety hooks into a root-owned managed settings file, and **keeps `write_guard.py`** as the layer
@@ -457,7 +457,7 @@ its own, and the token is revoked when the run ends.
 | Identity | Access | Credential on the fleet machine | Used by |
 |---|---|---|---|
 | `glennmcd` | admin | none | the operator |
-| App `g26work-fleet-authors`, commits as `g26work-fleet-authors[bot]` | this repository only: Contents, Pull requests and Issues read and write; Actions, Checks and Commit statuses read; no Workflows, no Administration | private key `/etc/fleetwright/app.pem` (root, 600); per run, a one-hour token in `/run/fleetwright-<slot>/gh-token` | author slots (write token); allocator and watchdog (read-only token) |
+| App `g26work-fleet-authors`, commits as `g26work-fleet-authors[bot]` | this repository only: Contents, Pull requests and Issues read and write; Actions, Checks and Commit statuses read; no Workflows, no Administration | private key `/etc/fleetwright/app.pem` (root, 600); per run, a one-hour token in `/run/fleetwright/<slot>/gh-token` | author slots (write token); allocator and watchdog (read-only token) |
 | `g26work` | write | personal token in `reviewer.env` | review slots |
 
 Reviews stay with `g26work`. Part B needs approvals from a code owner, and an App cannot be one.
@@ -470,7 +470,7 @@ is taken, pick another and use it everywhere below.
 1. **The unit starts.** `ExecStartPre=+` runs `fleetwright_token.py mint` as root (the `+` prefix), before the
    slot's own code. It signs a JWT with the private key, using `openssl` rather than a new Python dependency. It
    asks GitHub for an installation token limited to `commitment-tracker-ai` and the author permissions, and writes
-   it to `/run/fleetwright-%i/gh-token`. The file is mode 400, owned by the slot, in a `RuntimeDirectory` that
+   it to `/run/fleetwright/%i/gh-token`. The file is mode 400, owned by the slot, in a `RuntimeDirectory` that
    systemd creates at mode 700.
 2. **The run uses it.** The clone's git credential helper reads the file on every fetch and push, with
    `x-access-token` as the username. `gh` is reached through `/opt/fleetwright/bin/gh`, a shim placed first on
@@ -481,7 +481,7 @@ is taken, pick another and use it everywhere below.
 4. **The unit stops.** `ExecStopPost=+` revokes the token (`DELETE /installation/token`), and systemd removes the
    runtime directory.
 
-The allocator and watchdog units do the same with `mint --read-only`, a token with read permissions only. That
+The allocator and watchdog units do the same with `mint --mode read`, a token with read permissions only. That
 replaces `allocator.env` and the fallback to the authors' token, and `agent.env` keeps only the model key. As a
 side effect, review slots no longer have any authors' token in their environment.
 
@@ -521,9 +521,14 @@ KEY=~/Downloads/g26work-fleet-authors.*.private-key.pem
 scp $KEY fleet:app.pem && shred -u $KEY
 ```
 
-On the fleet machine:
+On the fleet machine, stop the line first and update the kit: `fleetwright_token.py` arrives with the pull, and
+the running units must not pick up the new scripts halfway.
 
 ```bash
+cd /opt/fleetwright
+uv run --script scripts/fleetwright_stop.py stop "switching the authors to the GitHub App"
+systemctl stop 'fleetwright-agent@*' fleetwright-allocate.timer fleetwright-watchdog.timer
+sudo git -C /opt/fleetwright pull --ff-only
 sudo install -m 600 -o root -g root ~/app.pem /etc/fleetwright/app.pem && shred -u ~/app.pem
 sudo install -m 600 -o root -g root /dev/null /etc/fleetwright/app.env
 sudoedit /etc/fleetwright/app.env
@@ -549,11 +554,11 @@ fleetwright:
 
 - **New `scripts/fleetwright_token.py`** (standard library plus the `openssl` binary). Its commands:
   - `installation` prints the installation id for `FLEETWRIGHT_APP_REPO`.
-  - `mint <slot>` writes the author token into that slot's runtime directory.
-  - `mint --read-only --to <file>` writes a read-only token for the allocator and watchdog.
+  - `mint --mode write|read --dir /run/fleetwright/<name> --owner <user> --slot <slot>|--unit <unit>` writes a
+    token into a unit's runtime directory: write for author slots, read for the allocator and watchdog.
   - `mint --stdout` prints a token, for drills only.
-  - `refresh` mints again for every running slot.
-  - `revoke <slot>` revokes the slot's token.
+  - `renew` mints again for every running author slot.
+  - `revoke --dir <dir> --slot <slot>|--unit <unit>` revokes the token in that directory.
 
   The JWT uses `iat` 60 seconds in the past, `exp` 9 minutes ahead, and the client ID as `iss`. Each token is
   written to a temporary file and renamed into place, at mode 400, owned by the slot. Next to it goes
@@ -573,10 +578,10 @@ fleetwright:
   ```
 
 - **`scripts/fleetwright_slot.py`:**
-  - The author unit gets `RuntimeDirectory=fleetwright-%i`, `RuntimeDirectoryMode=0700`,
-    `Environment=FLEETWRIGHT_TOKEN_FILE=/run/fleetwright-%i/gh-token`, the `ExecStartPre=+` mint and the
+  - The author unit gets `RuntimeDirectory=fleetwright/%i`, `RuntimeDirectoryMode=0700`,
+    `Environment=FLEETWRIGHT_TOKEN_FILE=/run/fleetwright/%i/gh-token`, the `ExecStartPre=+` mint and the
     `ExecStopPost=+` revoke, and `PATH` starting with `/opt/fleetwright/bin`.
-  - The allocator, dry-run and watchdog units get the same, with `mint --read-only`.
+  - The allocator, dry-run and watchdog units get the same, with `mint --mode read`.
   - New `fleetwright-token-refresh.service` and `.timer`, both added to the polkit rule's units.
   - `ALLOCATOR_ENV` is dropped and `APP_ENV` and `APP_KEY` are added.
   - `EMAIL_RE` accepts the `[bot]` in the noreply address.
@@ -601,7 +606,7 @@ Tests, written first, with no network (GitHub's API faked behind the module's HT
   - The token file is written atomically at mode 400, and `gh-token.json` matches GitHub's reply.
   - A failed mint exits non-zero and leaves no file.
   - `revoke` sends `DELETE /installation/token` with the slot's token.
-  - `refresh` touches only running slots.
+  - `renew` touches only running slots.
 - `tests/test_fleetwright_slot.py`:
   - The units have the runtime directory, the `+` prefixes and the `PATH` order.
   - The polkit rule allows the refresh units.
@@ -777,7 +782,7 @@ journalctl -t fleetwright-token _SYSTEMD_UNIT=fleetwright-agent@agent01.service 
 
 If no `fleetwright-push` line appears, the sandbox is blocking the journal socket. The slot side of the check is
 then blind (the GitHub side is not). Either allow the socket in the sandbox settings, or have the hook append to a
-file in the run's `/run/fleetwright-<slot>/` directory, which the token minter's root process copies to the
+file in the run's `/run/fleetwright/<slot>/` directory, which the token minter's root process copies to the
 journal when the run stops.
 
 #### Limits
@@ -793,13 +798,11 @@ journal when the run stops.
 
 ### Switch the slots
 
-On the fleet machine, as an operator, with the line stopped so that no run uses both identities:
+On the fleet machine, as an operator, with the line still stopped from the key step, so that no run uses both
+identities:
 
 ```bash
 cd /opt/fleetwright
-uv run --script scripts/fleetwright_stop.py stop "switching the authors to the GitHub App"
-systemctl stop 'fleetwright-agent@*' fleetwright-allocate.timer fleetwright-watchdog.timer
-sudo git -C /opt/fleetwright pull --ff-only
 sudo python3 /opt/fleetwright/scripts/fleetwright_slot.py init --admin "$USER" --apply
 NOREPLY='<id>+g26work-fleet-authors[bot]@users.noreply.github.com'
 for s in agent01 agent02 agent03 agent04; do
@@ -811,15 +814,25 @@ for s in agent01 agent02 agent03 agent04; do
 done
 sudoedit /etc/fleetwright/agent.env                             # delete the GH_TOKEN line; keep the model key
 sudo mv /etc/fleetwright/allocator.env /etc/fleetwright/allocator.env.off 2>/dev/null || true
+sudoedit /etc/fleetwright/fleetwright.json
+#   add "watchdog": {"app_bot": "g26work-fleet-authors[bot]"}; without it the watchdog skips the GitHub side
+#   of the wrong-branch check, and the drill below finds nothing
 sudo systemctl enable --now fleetwright-token-refresh.timer
 for s in agent01 agent02 agent03 agent04; do systemctl start fleetwright-check-agent@$s; done
 for s in agent01 agent02 agent03 agent04; do
   journalctl -u fleetwright-check-agent@$s -o cat -n 20 --no-pager    # the github line: App token, no admin, no workflows
 done
+```
+
+Run the drills under "Prove it" now, while the line is stopped (the watchdog runs while it is stopped). Then
+clear it and start the timers. The allocator assigns nothing while the line is stopped, its dry run included,
+so the dry run comes after the clear:
+
+```bash
+uv run --script scripts/fleetwright_stop.py clear
 systemctl start fleetwright-allocate-dry-run
 journalctl -u fleetwright-allocate-dry-run -o cat -n 30 --no-pager   # reads GitHub with the read-only token
 systemctl start fleetwright-allocate.timer fleetwright-watchdog.timer
-uv run --script scripts/fleetwright_stop.py clear
 ```
 
 `add` keeps the existing user and clone, and sets the commit address and credential helper again. Open PRs that
@@ -842,8 +855,10 @@ echo "# drill" >> "$(ls .github/workflows/*.yml | head -1)"
 git -c user.name=drill -c user.email=drill@invalid commit -qam "ci: drill"
 git push "https://x-access-token:${TOKEN}@github.com/glennmcd/commitment-tracker-ai.git" drill/app-workflows
 #   expect: refused, the App has no workflows permission
-GH_TOKEN="$TOKEN" gh api repos/glennmcd/commitment-tracker-ai/rulesets
-#   expect: HTTP 403, the App cannot read or change the rules
+GH_TOKEN="$TOKEN" gh api -X POST repos/glennmcd/commitment-tracker-ai/rulesets -f name=drill
+#   expect: HTTP 403, the App cannot change the rules. The body is incomplete on purpose: a token that may
+#   create rulesets gets 422 instead, and nothing is created. Reading them (GET) may return 200, since
+#   GitHub can allow that with Metadata read; that is not a hole.
 GH_TOKEN="$TOKEN" gh api -X DELETE installation/token
 GH_TOKEN="$TOKEN" gh api installation/repositories
 #   expect: HTTP 401, the token is revoked
@@ -855,7 +870,8 @@ Then let the allocator give `agent01` one real issue, and check four things:
 - The PR's author and the commits show `g26work-fleet-authors[bot]`.
 - The PR's checks start without an approval prompt.
 - `journalctl -u fleetwright-token-refresh -o cat` shows a renewal while the run is going.
-- `ls /run/fleetwright-agent01` fails once the unit has stopped.
+- `sudo ls -ld /run/fleetwright/agent01` shows mode 700, owned by `agent01`, while the run is going, and fails
+  once the unit has stopped.
 
 ### Rollback
 
