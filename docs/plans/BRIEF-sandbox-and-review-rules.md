@@ -206,9 +206,14 @@ Ubuntu 26.04. Run as an operator in `fleetwright-admin`, with `sudo` where shown
    ```bash
    sudo systemd-run --uid=agent01 --wait --pipe --collect \
      -p NoNewPrivileges=yes -p ProtectSystem=strict -p ReadWritePaths=/home/agent01 \
-     -p PrivateTmp=yes -p PrivateDevices=yes -p ProtectKernelTunables=yes -p ProtectControlGroups=yes \
-     bwrap --unshare-user --ro-bind / / --dev /dev true && echo "bwrap ok under the unit"
+     -p PrivateTmp=yes -p PrivateDevices=yes -p ProtectControlGroups=yes \
+     bwrap --unshare-user --unshare-pid --ro-bind / / --dev /dev --proc /proc true && echo "bwrap ok under the unit"
    ```
+
+   The probe mounts a `/proc` of its own, as Claude Code's sandbox does. The slot units do not set
+   `ProtectKernelTunables`: it mounts over parts of `/proc`, and the kernel then refuses the sandbox its own
+   `/proc`, so every command fails with `Can't mount proc on /newroot/proc: Operation not permitted`. The first
+   version of this probe left out `--proc` and passed under that setting; the first real run on m3800 found it.
 
 5. Update the kit, write the machine files (units and managed settings), and reload.
 
@@ -258,7 +263,7 @@ sudo systemd-run --unit=fleetwright-sandbox-drill --uid=agent01 --wait --pipe --
   -E FLEETWRIGHT_ALLOW_WRITE=/home/agent01/.cache:/home/agent01/.local/share/uv:/home/agent01/.bun \
   -E PATH=/home/agent01/.local/bin:/usr/local/bin:/usr/bin:/bin \
   -p NoNewPrivileges=yes -p ProtectSystem=strict -p ReadWritePaths=/home/agent01 \
-  -p PrivateTmp=yes -p PrivateDevices=yes \
+  -p PrivateTmp=yes -p PrivateDevices=yes -p ProtectControlGroups=yes \
   claude -p "$PROMPT" --dangerously-skip-permissions --output-format text
 ```
 

@@ -58,6 +58,7 @@ class Fake:
         self.modes: dict[str, int] = {}  # mode by path; the home's mode unless named
         self.bwrap_ok = True
         self.nested_ok = True  # a user namespace inside the sandbox keeps its capabilities
+        self.proc_ok = True  # the sandbox can mount its own /proc (nothing mounted over it)
         self.login = "g26work" if role == "review" else "glennmcd"
         self.gh_version = "2.104.0"
         self.gh_slurp = True
@@ -90,7 +91,13 @@ class Fake:
         if "symbolic-ref" in command:
             return (0, self.head + "\n") if self.head else (1, "")
         if command[:1] == ["bwrap"]:
-            ok = self.nested_ok if "unshare" in command else self.bwrap_ok
+            ok = (
+                self.nested_ok
+                if "unshare" in command
+                else self.proc_ok
+                if "--proc" in command
+                else self.bwrap_ok
+            )
             return (0, "") if ok else (1, "")
         if command[:3] == ["claude", "plugin", "list"]:
             return (0, self.plugins) if self.plugins is not None else (1, "")
@@ -244,6 +251,21 @@ def test_the_sandbox_needs_bubblewrap_and_socat(tool: str) -> None:
 PROBE = ["bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "true"]
 
 
+PROC_PROBE = [
+    "bwrap",
+    "--unshare-user",
+    "--unshare-pid",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+    "true",
+]
+
+
 def nested_probes(fake: Fake) -> list[list[str]]:
     return [c for c in fake.ran if c[:1] == ["bwrap"] and "unshare" in c]
 
@@ -261,6 +283,24 @@ def test_bubblewrap_that_cannot_start_under_the_unit_fails_and_says_why() -> Non
     ok, detail = results(fake)["bubblewrap"]
     assert not ok and "apparmor" in detail.lower()
     assert PROBE in fake.ran
+
+
+def test_the_sandbox_mounts_its_own_proc_as_claude_codes_does() -> None:
+    fake = Fake("author")
+    ok, _ = results(fake)["bubblewrap"]
+    assert ok
+    assert PROC_PROBE in fake.ran
+
+
+def test_a_proc_the_sandbox_cannot_mount_fails_and_names_the_unit_setting() -> None:
+    # systemd's ProtectKernelTunables mounts over parts of /proc, and the kernel then refuses the
+    # sandbox a /proc of its own: every command fails with "Can't mount proc".
+    fake = Fake("author")
+    fake.proc_ok = False
+    ok, detail = results(fake)["bubblewrap"]
+    assert not ok
+    assert "/proc" in detail and "ProtectKernelTunables" in detail
+    assert nested_probes(fake) == []
 
 
 def test_with_unix_sockets_open_one_level_is_enough() -> None:

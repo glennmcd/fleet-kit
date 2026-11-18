@@ -39,7 +39,9 @@ ProtectSystem=strict
 ReadWritePaths=/home/%i
 PrivateTmp=yes
 PrivateDevices=yes
-ProtectKernelTunables=yes
+# No ProtectKernelTunables: it mounts over parts of /proc, and the kernel then refuses Claude Code's
+# sandbox a /proc of its own, so every command fails with "Can't mount proc". The slot's user cannot
+# write /proc/sys anyway.
 ProtectControlGroups=yes
 
 [Install]

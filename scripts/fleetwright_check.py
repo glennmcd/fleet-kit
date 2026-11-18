@@ -47,6 +47,21 @@ ORIGIN_RE = re.compile(r"github\.com[:/]([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git
 SAFETY_HOOKS = ("stop_line.py", "write_guard.py")
 # A sandbox as Claude Code starts one: a user namespace over a read-only root.
 BWRAP_PROBE = ("bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "true")
+# Then with a PID namespace and a /proc of its own, as Claude Code mounts one. The kernel refuses that
+# when the unit's /proc has mounts over parts of it (systemd's ProtectKernelTunables).
+BWRAP_PROC_PROBE = (
+    "bwrap",
+    "--unshare-user",
+    "--unshare-pid",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+    "true",
+)
 # One level deeper, as Claude Code's seccomp helper goes: a user namespace inside the sandbox that writes
 # its own setgroups and uid map. Ubuntu's unpriv_bwrap AppArmor profile lets the first level through and
 # stops this one.
@@ -139,6 +154,15 @@ def _bubblewrap(m: Machine) -> Result:
             False,
             "bwrap cannot start a sandbox here: on Ubuntu, AppArmor blocks unprivileged user namespaces "
             "until /etc/apparmor.d/bwrap allows them (docs/vm-setup.md)",
+        )
+    code, _ = m.run(list(BWRAP_PROC_PROBE))
+    if code != 0:
+        return (
+            "bubblewrap",
+            False,
+            "bwrap starts but cannot mount its own /proc, so every sandboxed command fails with "
+            "\"Can't mount proc\": something mounts over parts of this unit's /proc, such as "
+            "ProtectKernelTunables=yes; take it out of the unit (fleetwright_slot.py init)",
         )
     if _sockets_open(m):
         return (

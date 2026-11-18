@@ -151,15 +151,27 @@ def test_the_review_unit_is_sandboxed_like_the_author_unit() -> None:
         assert line in files["fleetwright-review@.service"].splitlines()
 
 
-def test_slot_units_hide_devices_and_kernel_settings() -> None:
-    for name in ("fleetwright-agent@.service", "fleetwright-review@.service"):
+SANDBOXED_UNITS = (
+    "fleetwright-agent@.service",
+    "fleetwright-review@.service",
+    "fleetwright-check-agent@.service",
+    "fleetwright-check-review@.service",
+)
+
+
+def test_slot_units_hide_devices_and_cgroups() -> None:
+    for name in SANDBOXED_UNITS:
         lines = units()[name].splitlines()
-        for setting in (
-            "PrivateDevices=yes",
-            "ProtectKernelTunables=yes",
-            "ProtectControlGroups=yes",
-        ):
+        for setting in ("PrivateDevices=yes", "ProtectControlGroups=yes"):
             assert setting in lines, (name, setting)
+
+
+def test_slot_units_leave_proc_whole_for_the_sandbox() -> None:
+    # ProtectKernelTunables mounts over parts of /proc; the kernel then refuses bubblewrap a /proc
+    # of its own, and every sandboxed command fails with "Can't mount proc".
+    for name in SANDBOXED_UNITS:
+        settings = [ln for ln in units()[name].splitlines() if not ln.startswith("#")]
+        assert not any(ln.startswith("ProtectKernelTunables=") for ln in settings), name
 
 
 def test_each_role_runs_in_its_own_slice_under_the_fleets() -> None:
