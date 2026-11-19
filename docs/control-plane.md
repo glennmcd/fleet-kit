@@ -25,8 +25,23 @@ The agent's service unit sets these. On a desktop where they are unset, the hook
 | `FLEETWRIGHT_SLOTS_DIR` | where assignments are read from; default `/var/lib/fleetwright/slots` |
 | `FLEETWRIGHT_STOP_FILE` | the stop flag file; default `/var/lib/fleetwright/STOP` |
 | `FLEETWRIGHT_ALLOW_WRITE` | extra writable directories, separated by `:` (for example a shared cache) |
+| `FLEETWRIGHT_MODEL` | optional: the model the agent runs, passed as `claude --model`. Unset, Claude Code picks its default. A value that is not a plain model name stops the slot with exit 64 |
 
 The system temp directory is always writable.
+
+Each role has its own template unit, so to choose a role's model, give that template a drop-in as root:
+
+```bash
+sudo systemctl edit fleetwright-review@.service
+```
+
+```ini
+[Service]
+Environment=FLEETWRIGHT_MODEL=claude-opus-5-5
+```
+
+`fleetwright-agent@.service` takes the same drop-in for the authors. It applies to every slot of that role from its
+next run, and the journal's `start model=...` line shows which model each run used.
 
 ## Stop the line
 

@@ -379,6 +379,49 @@ def test_a_unit_that_sets_no_slot_clone_or_role_is_refused(
     assert launch.argv is None
 
 
+@pytest.mark.parametrize("value", [None, ""])
+def test_with_no_model_set_claude_picks_its_default(env: dict[str, str], value: str | None) -> None:
+    if value is not None:
+        env["FLEETWRIGHT_MODEL"] = value
+    launch = Launch()
+    assert run(env, FakeGit(), launch) == 0
+    assert launch.argv is not None
+    assert "--model" not in launch.argv
+
+
+@pytest.mark.parametrize(
+    ("slot", "role", "assignment", "model"),
+    [
+        ("agent01", "author", "issue 12", "claude-sonnet-5-5"),
+        ("review01", "review", "review 40", "claude-opus-5-5[1m]"),
+        ("agent01", "author", "issue 12", "opus"),
+    ],
+)
+def test_the_units_model_is_passed_to_claude(
+    tmp_path: Path, slots: Path, slot: str, role: str, assignment: str, model: str
+) -> None:
+    # Each role's template unit sets its own FLEETWRIGHT_MODEL, in a drop-in.
+    env = make_env(tmp_path, slots, slot, role, assignment)
+    env["FLEETWRIGHT_MODEL"] = model
+    launch = Launch()
+    assert run(env, FakeGit(), launch, whoami("g26work")) == 0
+    assert launch.argv is not None
+    assert launch.argv[launch.argv.index("--model") + 1] == model
+
+
+@pytest.mark.parametrize(
+    "model", ["-p", "--dangerously-skip-permissions", "opus sonnet", "opus;id", "$(id)", "a\nb"]
+)
+def test_a_model_that_is_not_a_plain_name_starts_nothing(
+    env: dict[str, str], model: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env["FLEETWRIGHT_MODEL"] = model
+    git, launch = FakeGit(), Launch()
+    assert run(env, git, launch) == BAD_CONFIG
+    assert git.calls == [] and launch.argv is None
+    assert "FLEETWRIGHT_MODEL" in capsys.readouterr().err
+
+
 def test_a_slot_name_cannot_walk_out_of_the_slots_directory(env: dict[str, str]) -> None:
     env["FLEETWRIGHT_SLOT"] = "../agent01"
     launch = Launch()

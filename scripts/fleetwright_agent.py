@@ -23,7 +23,7 @@ The units (``fleetwright-agent@.service`` and ``fleetwright-review@.service``, f
    brought up to the pushed one; the pushed one if another slot started it; else a new one from
    ``origin/main``) with ``origin``'s ``issue/<n>`` as its upstream, since the agent's sandbox keeps
    ``.git/config`` read-only; a reviewer on the pull request's head commit, detached;
-7. starts ``claude -p`` with its events streamed, through ``scripts/fleetwright_stream.py``, which prints one line
+7. starts ``claude -p`` (with ``--model`` when ``FLEETWRIGHT_MODEL`` is set) with its events streamed, through ``scripts/fleetwright_stream.py``, which prints one line
    per step to the journal and exits with the agent's exit code.
 
 Each prompt is fixed apart from a number that is checked to be a number, so nothing from the assignment
@@ -55,6 +55,8 @@ DEFAULT_SLOTS_DIR = "/var/lib/fleetwright/slots"
 BASE = "origin/main"
 ROLES = {"author": re.compile(r"agent[0-9]{2}"), "review": re.compile(r"review[0-9]{2}")}
 ASSIGNMENT_RE = re.compile(r"(issue|fix|review) ([1-9][0-9]{0,8})")
+# A model id or alias, such as claude-opus-5-5, opus or claude-opus-5-5[1m]. Never an option.
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,99}")
 
 Git = Callable[[Sequence[str]], tuple[int, str]]
 Launch = Callable[[Sequence[str]], int]
@@ -219,6 +221,13 @@ def run(env: Mapping[str, str], git: Git, launch: Launch, whoami: WhoAmI = _gh_l
             "an agentNN slot is an author, a reviewNN slot a reviewer"
         )
         return BAD_CONFIG
+    model = env.get("FLEETWRIGHT_MODEL", "")
+    if model and not MODEL_RE.fullmatch(model):
+        _say(
+            f"FLEETWRIGHT_MODEL {model!r} is not a model name such as claude-opus-5-5; "
+            "fix the role's drop-in (systemctl edit fleetwright-agent@ or fleetwright-review@)"
+        )
+        return BAD_CONFIG
 
     stop_file = Path(env.get("FLEETWRIGHT_STOP_FILE") or fleetwright_stop.DEFAULT_STOP_FILE)
     note = fleetwright_stop.status(stop_file)
@@ -274,6 +283,8 @@ def run(env: Mapping[str, str], git: Git, launch: Launch, whoami: WhoAmI = _gh_l
             "--output-format",
             "stream-json",
             "--verbose",
+            # The role's template unit may set it in a drop-in; unset, Claude Code picks its default.
+            *(["--model", model] if model else []),
         ]
     )
 
