@@ -70,9 +70,15 @@ class Fake:
         self.writable: set[str] = set()
         self.listable: set[str] = set()
         self.ran: list[list[str]] = []
+        # The run unit's Environment= as `systemctl show` prints it; None when systemctl fails.
+        self.unit_env: str | None = (
+            f"FLEETWRIGHT_SLOT={slot} FLEETWRIGHT_ROLE={role} CC_PRACTICES_UNATTENDED=1\n"
+        )
 
     def run(self, command: Sequence[str]) -> tuple[int, str]:
         self.ran.append(list(command))
+        if command[:2] == ["systemctl", "show"]:
+            return (0, self.unit_env) if self.unit_env is not None else (1, "")
         if list(command) == ["gh", "--version"]:
             return 0, f"gh version {self.gh_version} (2026-11-12)\nhttps://github.com/cli/cli\n"
         if list(command) == ["gh", "api", "--help"]:
@@ -231,6 +237,54 @@ def test_no_model_key_fails() -> None:
     assert not results(fake)["model key"][0]
     fake.env["CLAUDE_CODE_OAUTH_TOKEN"] = "x"
     assert results(fake)["model key"][0]
+
+
+# --- the model the run unit passes to claude ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("role", "unit"),
+    [
+        ("review", "fleetwright-review@review01.service"),
+        ("author", "fleetwright-agent@agent01.service"),
+    ],
+)
+def test_the_model_is_read_from_the_run_unit_not_the_check_unit(role: str, unit: str) -> None:
+    # The role's drop-in is on the run unit's template; the check unit never sees it.
+    fake = Fake(role)
+    results(fake)
+    show = ["systemctl", "show", unit, "-p", "Environment", "--value"]
+    assert show in fake.ran
+
+
+def test_no_model_set_reports_claude_codes_default() -> None:
+    ok, detail = results(Fake())["model"]
+    assert ok and detail == "Claude Code's default (FLEETWRIGHT_MODEL unset)"
+
+
+def test_a_model_set_in_a_drop_in_is_reported_with_its_unit() -> None:
+    fake = Fake()
+    fake.unit_env = (
+        'FLEETWRIGHT_SLOT=review01 "FLEETWRIGHT_ALLOW_WRITE=/home/a b" '
+        "FLEETWRIGHT_MODEL=claude-opus-5-5[1m]\n"
+    )
+    ok, detail = results(fake)["model"]
+    assert ok and detail == "claude-opus-5-5[1m] (fleetwright-review@review01.service)"
+
+
+@pytest.mark.parametrize("value", ["-p", '"opus sonnet"', "opus;id"])
+def test_a_model_the_runner_would_refuse_fails(value: str) -> None:
+    fake = Fake()
+    fake.unit_env = f"FLEETWRIGHT_SLOT=review01 FLEETWRIGHT_MODEL={value}\n"
+    ok, detail = results(fake)["model"]
+    assert not ok and "exits 64" in detail
+
+
+def test_a_run_unit_systemd_cannot_show_fails() -> None:
+    fake = Fake()
+    fake.unit_env = None
+    ok, detail = results(fake)["model"]
+    assert not ok and "fleetwright-review@review01.service" in detail
 
 
 def test_a_missing_tool_is_named() -> None:

@@ -13,7 +13,8 @@ fleetwright-admin can check a slot without reading its tokens:
 It reports, one line each: the slot's name and role agree; the unattended switch is on; the tools are on
 the PATH, ``bwrap`` and ``socat`` included; bubblewrap can start a sandbox under the unit; ``gh`` has
 ``api --slurp`` (2.48 or later, which the allocator needs; Ubuntu's own package is older); a model key is set
-(its name, never its value); ``gh`` is signed in, as ``FLEETWRIGHT_REVIEWER_LOGIN`` on a review slot; the
+(its name, never its value); the model the slot's run unit passes to ``claude`` (``FLEETWRIGHT_MODEL``, read
+from the run unit through ``systemctl show``, since a role's drop-in is on that unit, not this one); ``gh`` is signed in, as ``FLEETWRIGHT_REVIEWER_LOGIN`` on a review slot; the
 clone is there, and what the next run does with any work a stopped run left in it; both plugins are installed; Claude Code's managed settings require the sandbox with
 no way out and run the stop switch and write guard from files only root can change; the home is closed to
 other users; the sandbox keeps the slot out of ``/var/lib/fleetwright`` and ``/etc/fleetwright``; the line is
@@ -27,6 +28,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -35,6 +37,8 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from fleetwright_agent import MODEL_RE
 
 FLEETWRIGHT_DIR = "/var/lib/fleetwright"
 ENV_DIR = "/etc/fleetwright"
@@ -265,6 +269,32 @@ def _model_key(m: Machine) -> Result:
     return "model key", False, f"none of {', '.join(MODEL_KEYS)} is set (agent.env)"
 
 
+def _model(m: Machine) -> Result:
+    """The model the slot's run unit passes to claude. A role's drop-in sets it on the run unit's template,
+    which this check unit does not share, so systemd is asked for the run unit's environment."""
+    slot = m.env.get("FLEETWRIGHT_SLOT", "")
+    review = m.env.get("FLEETWRIGHT_ROLE") == "review"
+    unit = f"fleetwright-{'review' if review else 'agent'}@{slot}.service"
+    code, out = m.run(["systemctl", "show", unit, "-p", "Environment", "--value"])
+    try:
+        assignments = shlex.split(out) if code == 0 else None
+    except ValueError:
+        assignments = None
+    if assignments is None:
+        return "model", False, f"cannot read {unit}'s environment from systemd"
+    values = dict(a.split("=", 1) for a in assignments if "=" in a)
+    model = values.get("FLEETWRIGHT_MODEL", "")
+    if not model:
+        return "model", True, "Claude Code's default (FLEETWRIGHT_MODEL unset)"
+    if not MODEL_RE.fullmatch(model):
+        return (
+            "model",
+            False,
+            f"FLEETWRIGHT_MODEL {model!r} in {unit} is not a model name: the runner exits 64",
+        )
+    return "model", True, f"{model} ({unit})"
+
+
 def _origin_repo(m: Machine) -> str:
     """owner/name of the clone's origin, or "" when it cannot be read."""
     clone = m.env.get("FLEETWRIGHT_CLONE", "")
@@ -406,6 +436,7 @@ CHECKS = (
     _bubblewrap,
     _gh_version,
     _model_key,
+    _model,
     _github,
     _clone,
     _plugins,

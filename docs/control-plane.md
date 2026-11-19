@@ -41,7 +41,8 @@ Environment=FLEETWRIGHT_MODEL=claude-opus-5-5
 ```
 
 `fleetwright-agent@.service` takes the same drop-in for the authors. It applies to every slot of that role from its
-next run, and the journal's `start model=...` line shows which model each run used.
+next run, and the journal's `start model=...` line shows which model each run used. The slot's check unit reports
+the model before any run: it reads the run unit's environment from systemd, since the drop-in is not on the check unit.
 
 ## Stop the line
 
@@ -271,7 +272,7 @@ What fleetwright-admin does **not** get, because either would make it root by an
   ```
 
   [`fleetwright_check.py`](../scripts/fleetwright_check.py) reports, without printing a secret: the slot's role, the
-  unattended switch, the tools on the PATH, that bubblewrap starts, that `gh` has `api --slurp` (2.48 or later), the model key's name, GitHub access (on an author
+  unattended switch, the tools on the PATH, that bubblewrap starts, that `gh` has `api --slurp` (2.48 or later), the model key's name, the model the run unit passes to `claude` (its `FLEETWRIGHT_MODEL`, drop-ins included, or Claude Code's default), GitHub access (on an author
   slot, the App token: it can push, has no Administration or Workflows, and reaches the clone's repository; on a
   review slot, the `gh` login is `FLEETWRIGHT_REVIEWER_LOGIN`), the clone, both plugins, Claude Code's managed settings, the
   home's mode, the sandbox (no write to `/var/lib/fleetwright`, no read of `/etc/fleetwright`) and the stop flag.
