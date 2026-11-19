@@ -21,6 +21,13 @@ into the measurements Alexander Marquardt's token article is built on:
         --json number,headRefName,mergedAt,additions,deletions > prs.json
     python3 scripts/fleetwright_report.py --prs prs.json --baseline 2026-W45
 
+``--pr N`` (repeatable) narrows every number to the work on those pull requests: the
+author's calls on each PR's branch (from ``--prs``) and the reviewer's calls, found by the
+PR number in the fleet's fixed review prompt, since a reviewer works on a detached head.
+To select an open PR, write the PR data with ``--state all``.
+
+    python3 scripts/fleetwright_report.py --prs prs.json --pr 57 --pr 58
+
 Prices are relative to fresh input (cache read 0.1, 5-minute cache write 1.25,
 1-hour cache write 2, output 5); override them with ``--price kind=value``.
 Standard library only.
@@ -32,6 +39,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import statistics
 import sys
 from collections import defaultdict
@@ -55,6 +63,11 @@ EXPIRY_WRITE_SHARE = 0.5
 CEILING_TOKENS = 150_000
 LINE_CAP = 5_000
 SYNTHETIC_MODEL = "<synthetic>"
+# The opening of fleetwright_agent.review_prompt; a test ties the two together. Anchored at the
+# start of a transcript's first prompt, so a quote of it elsewhere never makes a run a review.
+REVIEW_PROMPT_RE = re.compile(
+    r"Run the cc-practices review-pr skill on pull request #([1-9][0-9]{0,8}) of this repository\."
+)
 
 
 @dataclass
@@ -71,6 +84,7 @@ class Request:
     cache_write_5m: int
     cache_write_1h: int
     output: int
+    review_pr: int | None = None  # the PR a reviewer run was started on
 
     @property
     def cache_write(self) -> int:
@@ -133,6 +147,37 @@ def _request(record: dict[str, Any], path: str) -> Request | None:
     )
 
 
+def review_pr(text: str) -> int | None:
+    """The PR number when *text* opens with the fleet's review prompt."""
+    match = REVIEW_PROMPT_RE.match(text)
+    return int(match.group(1)) if match else None
+
+
+def _prompt_text(record: dict[str, Any]) -> str | None:
+    """The text a person or the runner typed, or None for any other record."""
+    if record.get("type") != "user" or record.get("isMeta"):
+        return None
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    blocks = [b for b in content if isinstance(b, dict)]
+    if any(b.get("type") == "tool_result" for b in blocks):
+        return None
+    texts = [b.get("text") for b in blocks if b.get("type") == "text"]
+    return "".join(t for t in texts if isinstance(t, str)) or None
+
+
+def _parent_transcript(path: str) -> str | None:
+    """``<session>.jsonl`` for a subagent transcript under ``<session>/subagents/``."""
+    folder = os.path.dirname(path)
+    if os.path.basename(folder) != "subagents":
+        return None
+    return os.path.dirname(folder) + ".jsonl"
+
+
 def read_requests(paths: Iterable[str]) -> list[Request]:
     """Every request in *paths*, once each, oldest first.
 
@@ -141,18 +186,30 @@ def read_requests(paths: Iterable[str]) -> list[Request]:
     """
     seen: set[str] = set()
     found: list[Request] = []
+    reviews: dict[str, int | None] = {}
     for path in paths:
+        first_prompt: str | None = None
         with open(path, encoding="utf-8", errors="ignore") as f:
             for line in f:
                 try:
                     record = json.loads(line)
                 except ValueError:
                     continue
-                request = _request(record, path) if isinstance(record, dict) else None
+                if not isinstance(record, dict):
+                    continue
+                if first_prompt is None:
+                    first_prompt = _prompt_text(record)
+                request = _request(record, path)
                 if request is None or request.request_id in seen:
                     continue
                 seen.add(request.request_id)
                 found.append(request)
+        reviews[path] = review_pr(first_prompt) if first_prompt else None
+    for request in found:
+        parent = _parent_transcript(request.transcript)
+        request.review_pr = reviews.get(request.transcript) or (
+            reviews.get(parent) if parent else None
+        )
     found.sort(key=lambda r: r.when)
     return found
 
@@ -209,12 +266,21 @@ class PullRequest:
     lines: int
 
 
-def read_prs(path: str, line_cap: int = LINE_CAP) -> list[PullRequest]:
-    """Merged PRs from ``gh pr list --json number,headRefName,mergedAt,additions,deletions``."""
+def _pr_rows(path: str) -> list[dict[str, Any]]:
     with open(path, encoding="utf-8") as f:
         rows = json.load(f)
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def read_pr_branches(path: str) -> dict[int, str]:
+    """The head branch of every PR in the file, merged or not."""
+    return {int(row["number"]): str(row.get("headRefName") or "") for row in _pr_rows(path)}
+
+
+def read_prs(path: str, line_cap: int = LINE_CAP) -> list[PullRequest]:
+    """Merged PRs from ``gh pr list --json number,headRefName,mergedAt,additions,deletions``."""
     prs = []
-    for row in rows:
+    for row in _pr_rows(path):
         if not row.get("mergedAt"):
             continue
         lines = int(row.get("additions") or 0) + int(row.get("deletions") or 0)
@@ -227,6 +293,32 @@ def read_prs(path: str, line_cap: int = LINE_CAP) -> list[PullRequest]:
             )
         )
     return prs
+
+
+def select_prs(
+    requests: list[Request],
+    prs: list[PullRequest],
+    branches: dict[int, str],
+    wanted: set[int],
+) -> tuple[list[Request], list[PullRequest], list[str]]:
+    """The calls and merged PRs of the *wanted* PRs, and warnings about what could not be matched.
+
+    An author's call belongs to a PR when it was made on that PR's head branch; a reviewer's when
+    its run was started on that PR.
+    """
+    warnings = [
+        f"PR #{n} is not in the PR data; only its reviewer's calls are counted"
+        for n in sorted(wanted)
+        if n not in branches
+    ]
+    keep = {branches[n] for n in wanted if n in branches and branches[n]}
+    warnings += [
+        f"PR #{n} also came from {branch}; that branch's author calls are counted here too"
+        for n, branch in sorted(branches.items())
+        if branch in keep and n not in wanted
+    ]
+    kept = [r for r in requests if r.branch in keep or r.review_pr in wanted]
+    return kept, [p for p in prs if p.number in wanted], warnings
 
 
 @dataclass
@@ -243,6 +335,80 @@ def percentile(values: list[int], q: float) -> int:
     return ordered[min(len(ordered) - 1, int(q * len(ordered)))]
 
 
+@dataclass
+class _Marks:
+    """Calls picked out across the whole set, before it is split into rows."""
+
+    expired: set[str]
+    firsts: set[str]  # each transcript's first call
+    author_firsts: set[str]  # the first call of each author's own transcript
+
+    @classmethod
+    def of(cls, requests: list[Request], ttl: int) -> _Marks:
+        grouped = by_transcript(requests).values()
+        return cls(
+            expiry_ids(requests, ttl),
+            {calls[0].request_id for calls in grouped},
+            {
+                calls[0].request_id
+                for calls in grouped
+                if not calls[0].is_subagent and calls[0].review_pr is None
+            },
+        )
+
+
+def _median(values: Iterable[int]) -> int | None:
+    found = list(values)
+    return round(statistics.median(found)) if found else None
+
+
+def summary_row(
+    name: str,
+    calls: list[Request],
+    prs: list[PullRequest],
+    prices: dict[str, float],
+    marks: _Marks,
+    ceiling: int = CEILING_TOKENS,
+) -> dict[str, Any]:
+    weighted = sum(r.weighted(prices) for r in calls)
+    write_5m, write_1h = prices["cache_write_5m"], prices["cache_write_1h"]
+    expiry = sum(
+        r.cache_write_5m * write_5m + r.cache_write_1h * write_1h
+        for r in calls
+        if r.request_id in marks.expired
+    )
+    reads = sum(r.cache_read for r in calls)
+    contexts = [r.context for r in calls]
+    first = [r for r in calls if r.request_id in marks.firsts]
+    merged, lines = len(prs), sum(p.lines for p in prs)
+    raw = sum(r.raw for r in calls)
+    return {
+        "week": name,
+        "requests": len(calls),
+        "raw_tokens": raw,
+        "weighted": round(weighted),
+        "merged_prs": merged,
+        "changed_lines": lines,
+        "raw_per_pr": raw / merged if merged else None,
+        "raw_per_line": raw / lines if lines else None,
+        "weighted_per_pr": weighted / merged if merged else None,
+        "weighted_per_line": weighted / lines if lines else None,
+        "cache_read_share": reads / raw if raw else 0.0,
+        "cache_read_spend_share": reads * prices["cache_read"] / weighted if weighted else 0.0,
+        "expiry_share": expiry / weighted if weighted else 0.0,
+        "median_context": _median(contexts) or 0,
+        "p90_context": percentile(contexts, 0.9),
+        "over_ceiling_share": (
+            sum(c >= ceiling for c in contexts) / len(contexts) if contexts else 0.0
+        ),
+        "first_turn_read": _median(r.cache_read for r in first),
+        "first_turn_write": _median(r.cache_write for r in first),
+        "author_first_context": _median(
+            r.context for r in calls if r.request_id in marks.author_firsts
+        ),
+    }
+
+
 def week_rows(
     requests: list[Request],
     prs: list[PullRequest],
@@ -256,50 +422,22 @@ def week_rows(
         weeks.setdefault(request.week, Week(request.week)).requests.append(request)
     for pr in prs:
         weeks.setdefault(pr.week, Week(pr.week)).prs.append(pr)
-    expired = expiry_ids(requests, ttl)
-    firsts = {calls[0].request_id for calls in by_transcript(requests).values()}
-    rows = []
-    for name in sorted(weeks):
-        week = weeks[name]
-        calls = week.requests
-        weighted = sum(r.weighted(prices) for r in calls)
-        write_5m, write_1h = prices["cache_write_5m"], prices["cache_write_1h"]
-        expiry = sum(
-            r.cache_write_5m * write_5m + r.cache_write_1h * write_1h
-            for r in calls
-            if r.request_id in expired
-        )
-        contexts = [r.context for r in calls]
-        first = [r for r in calls if r.request_id in firsts]
-        merged, lines = len(week.prs), sum(p.lines for p in week.prs)
-        raw = sum(r.raw for r in calls)
-        rows.append(
-            {
-                "week": name,
-                "requests": len(calls),
-                "raw_tokens": raw,
-                "weighted": round(weighted),
-                "merged_prs": merged,
-                "changed_lines": lines,
-                "raw_per_pr": raw / merged if merged else None,
-                "weighted_per_pr": weighted / merged if merged else None,
-                "weighted_per_line": weighted / lines if lines else None,
-                "cache_read_share": (sum(r.cache_read for r in calls) / raw) if raw else 0.0,
-                "expiry_share": expiry / weighted if weighted else 0.0,
-                "median_context": round(statistics.median(contexts)) if contexts else 0,
-                "p90_context": percentile(contexts, 0.9),
-                "over_ceiling_share": (
-                    sum(c >= ceiling for c in contexts) / len(contexts) if contexts else 0.0
-                ),
-                "first_turn_read": round(statistics.median(r.cache_read for r in first))
-                if first
-                else None,
-                "first_turn_write": round(statistics.median(r.cache_write for r in first))
-                if first
-                else None,
-            }
-        )
-    return rows
+    marks = _Marks.of(requests, ttl)
+    return [
+        summary_row(name, weeks[name].requests, weeks[name].prs, prices, marks, ceiling)
+        for name in sorted(weeks)
+    ]
+
+
+def total_row(
+    requests: list[Request],
+    prs: list[PullRequest],
+    prices: dict[str, float],
+    ceiling: int = CEILING_TOKENS,
+    ttl: int = CACHE_TTL_SECS,
+) -> dict[str, Any]:
+    """The same summary over every week at once: medians and shares over all calls, not per week."""
+    return summary_row("Total", requests, prs, prices, _Marks.of(requests, ttl), ceiling)
 
 
 INDEXED = ("weighted", "weighted_per_pr", "weighted_per_line")
@@ -352,6 +490,8 @@ def _fmt(value: Any, kind: str = "") -> str:
         return "-"
     if kind == "pct":
         return f"{100 * value:.1f}%"
+    if kind == "int":
+        return f"{round(value):,}"
     if isinstance(value, float):
         return f"{value:,.1f}"
     if isinstance(value, int):
@@ -369,16 +509,20 @@ def _table(headers: list[tuple[str, str, str]], rows: list[dict[str, Any]]) -> I
 WEEK_COLUMNS = [
     ("week", "Week", ""),
     ("requests", "Calls", ""),
+    ("raw_tokens", "Raw tokens", ""),
+    ("raw_per_line", "Raw/line", "int"),
     ("weighted", "Weighted tokens", ""),
     ("weighted_index", "Index", ""),
     ("merged_prs", "Merged PRs", ""),
     ("weighted_per_pr_index", "Per PR idx", ""),
     ("weighted_per_line_index", "Per line idx", ""),
     ("cache_read_share", "Cache reads", "pct"),
+    ("cache_read_spend_share", "Reads % of cost", "pct"),
     ("expiry_share", "Cache expiry", "pct"),
     ("median_context", "Median ctx", ""),
     ("over_ceiling_share", "Ctx >={ceiling}", "pct"),
     ("first_turn_write", "1st-turn write", ""),
+    ("author_first_context", "Author 1st ctx", ""),
 ]
 BRANCH_COLUMNS = [
     ("branch", "Branch", ""),
@@ -394,10 +538,15 @@ def render(
     branches: list[dict[str, Any]],
     top: int,
     ceiling: int = CEILING_TOKENS,
+    selected: list[int] | None = None,
 ) -> str:
     label = f"{ceiling // 1000}k" if ceiling % 1000 == 0 else f"{ceiling:,}"
     columns = [(key, title.format(ceiling=label), kind) for key, title, kind in WEEK_COLUMNS]
-    lines = ["## Per week (index: 100 = baseline)", "", *_table(columns, weeks)]
+    lines = []
+    if selected:
+        names = ", ".join(f"#{n}" for n in selected)
+        lines += [f"Only PRs {names}: their authors' and reviewers' calls.", ""]
+    lines += ["## Per week (index: 100 = baseline)", "", *_table(columns, weeks)]
     lines += ["", f"## Top {top} branches by weighted tokens", ""]
     lines += _table(BRANCH_COLUMNS, branches[:top])
     return "\n".join(lines)
@@ -414,6 +563,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project", help="only transcripts whose folder name contains this")
     parser.add_argument("--since", help="YYYY-MM-DD; ignore earlier calls")
     parser.add_argument("--prs", help="JSON from gh pr list --state merged --json ...")
+    parser.add_argument(
+        "--pr",
+        type=int,
+        action="append",
+        default=[],
+        help="count only this PR's author and reviewer calls; repeatable (needs --prs for authors)",
+    )
     parser.add_argument("--baseline", default="", help="comma-separated ISO weeks, e.g. 2026-W45")
     parser.add_argument(
         "--ceiling",
@@ -452,15 +608,41 @@ def main(argv: list[str] | None = None) -> int:
     if not requests:
         print(f"no requests found under {', '.join(roots)}", file=sys.stderr)
         return 1
+    selected = sorted(set(args.pr))
+    if selected:
+        if not args.prs:
+            print(
+                "fleetwright_report: no --prs, so authors' calls can't be matched to a PR; "
+                "counting reviewer calls only",
+                file=sys.stderr,
+            )
+        pr_branches = read_pr_branches(args.prs) if args.prs else {}
+        requests, prs, warnings = select_prs(requests, prs, pr_branches, set(selected))
+        for warning in warnings if args.prs else []:
+            print(f"fleetwright_report: {warning}", file=sys.stderr)
+        if not requests:
+            names = ", ".join(f"#{n}" for n in selected)
+            print(f"no calls found for PRs {names}", file=sys.stderr)
+            return 1
 
     weeks = week_rows(requests, prs, prices, args.ceiling, args.ttl)
+    total = total_row(requests, prs, prices, args.ceiling, args.ttl)
     baseline = [w for w in args.baseline.split(",") if w] or [weeks[0]["week"]]
-    add_index(weeks, baseline)
+    add_index([*weeks, total], baseline)
+    total["weighted_index"] = None  # a total of many weeks against one week's average says nothing
     branches = branch_rows(requests, prs, prices)
     if args.json:
-        print(json.dumps({"baseline": baseline, "weeks": weeks, "branches": branches}, indent=2))
+        report: dict[str, Any] = {
+            "baseline": baseline,
+            "weeks": weeks,
+            "total": total,
+            "branches": branches,
+        }
+        if selected:
+            report["prs"] = selected
+        print(json.dumps(report, indent=2))
     else:
-        print(render(weeks, branches, args.top, args.ceiling))
+        print(render([*weeks, total], branches, args.top, args.ceiling, selected))
     return 0
 
 

@@ -98,6 +98,57 @@ class ReadRequests(Fixture):
         self.assertEqual([r.request_id for r in requests], ["r1"])
 
 
+def prompt(text: str, **extra: Any) -> dict[str, Any]:
+    return {"type": "user", "message": {"role": "user", "content": text}, **extra}
+
+
+REVIEW_57 = (
+    "Run the cc-practices review-pr skill on pull request #57 of this repository. The clone is "
+    "checked out at the pull request's head commit."
+)
+
+
+class ReviewRuns(Fixture):
+    def test_the_agent_review_prompt_names_its_pr(self) -> None:
+        # The reviewer link depends on fleetwright_agent's fixed prompt; if its wording changes,
+        # this fails instead of the report silently dropping every review.
+        import fleetwright_agent
+
+        self.assertEqual(fr.review_pr(fleetwright_agent.review_prompt(57)), 57)
+
+    def test_a_review_transcript_and_its_subagents_carry_the_pr(self) -> None:
+        when = "2026-11-10T10:00:00Z"
+        main = self.write(
+            "p/rev.jsonl",
+            [prompt(REVIEW_57), record("r1", when, branch="HEAD")],
+        )
+        sub = self.write("p/rev/subagents/agent-x.jsonl", [record("r2", when, branch="HEAD")])
+        author = self.write("p/auth.jsonl", [prompt("Work on issue 52"), record("a1", when)])
+        found = {r.request_id: r.review_pr for r in fr.read_requests([main, sub, author])}
+        self.assertEqual(found, {"r1": 57, "r2": 57, "a1": None})
+
+    def test_list_content_and_meta_records_are_handled(self) -> None:
+        when = "2026-11-10T10:00:00Z"
+        path = self.write(
+            "p/rev.jsonl",
+            [
+                prompt("<system-reminder>hook output</system-reminder>", isMeta=True),
+                {"type": "user", "message": {"content": [{"type": "text", "text": REVIEW_57}]}},
+                record("r1", when, branch="HEAD"),
+            ],
+        )
+        self.assertEqual(fr.read_requests([path])[0].review_pr, 57)
+
+    def test_lookalike_prompts_are_not_reviews(self) -> None:
+        when = "2026-11-10T10:00:00Z"
+        quoted = self.write(
+            "p/a.jsonl", [prompt(f"Please do this: {REVIEW_57}"), record("a", when)]
+        )
+        later = self.write("p/b.jsonl", [prompt("hello"), prompt(REVIEW_57), record("b", when)])
+        found = {r.request_id: r.review_pr for r in fr.read_requests([quoted, later])}
+        self.assertEqual(found, {"a": None, "b": None})
+
+
 class Weighting(unittest.TestCase):
     def test_prices_apply_per_kind(self) -> None:
         when = fr.parse_time("2026-11-10T10:00:00Z")
@@ -190,9 +241,58 @@ class PullRequests(Fixture):
         )
         prs = fr.read_prs(str(path))
         self.assertEqual([(p.number, p.lines, p.week) for p in prs], [(1, 5_000, "2026-W46")])
+        # The branch of every PR, merged or not, so an open PR's work can be selected too.
+        self.assertEqual(fr.read_pr_branches(str(path)), {1: "feat/a", 2: "feat/b"})
 
 
-class Report(Fixture):
+class SelectPrs(Fixture):
+    def build(self) -> list[fr.Request]:
+        when = "2026-11-10T10:00:00Z"
+        paths = [
+            self.write("p/a52.jsonl", [record("a52", when, branch="issue/52")]),
+            self.write("p/a53.jsonl", [record("a53", when, branch="issue/53")]),
+            self.write("p/a54.jsonl", [record("a54", when, branch="issue/54")]),
+            self.write("p/r57.jsonl", [prompt(REVIEW_57), record("r57", when, branch="HEAD")]),
+            self.write(
+                "p/r58.jsonl",
+                [prompt(REVIEW_57.replace("#57", "#58")), record("r58", when, branch="HEAD")],
+            ),
+        ]
+        return fr.read_requests(paths)
+
+    def test_author_and_reviewer_calls_of_each_pr_are_kept(self) -> None:
+        requests = self.build()
+        prs = [
+            fr.PullRequest(57, "issue/52", "2026-W46", 10),
+            fr.PullRequest(58, "issue/53", "2026-W46", 20),
+            fr.PullRequest(59, "issue/54", "2026-W46", 30),
+        ]
+        branches = {57: "issue/52", 58: "issue/53", 59: "issue/54"}
+        kept, kept_prs, warnings = fr.select_prs(requests, prs, branches, {57, 58})
+        self.assertEqual(sorted(r.request_id for r in kept), ["a52", "a53", "r57", "r58"])
+        self.assertEqual([p.number for p in kept_prs], [57, 58])
+        self.assertEqual(warnings, [])
+
+    def test_unknown_pr_and_shared_branch_are_warned(self) -> None:
+        requests = self.build()
+        branches = {57: "issue/52", 60: "issue/52"}
+        kept, _, warnings = fr.select_prs(requests, [], branches, {57, 58})
+        self.assertEqual(sorted(r.request_id for r in kept), ["a52", "r57", "r58"])
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("#58", warnings[0])
+        self.assertIn("#60", warnings[1])
+
+
+class TwoWeeks(Fixture):
+    """Two weeks of calls on two branches, and three merged PRs."""
+
+    def json_report(self, *args: str) -> dict[str, Any]:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(fr.main([*args, "--json"]), 0)
+        report: dict[str, Any] = json.loads(out.getvalue())
+        return report
+
     def build(self) -> tuple[list[fr.Request], list[fr.PullRequest]]:
         week45 = self.write(
             "p/w45.jsonl",
@@ -217,6 +317,8 @@ class Report(Fixture):
         ]
         return fr.read_requests([week45, week46]), prs
 
+
+class Report(TwoWeeks):
     def test_weeks_index_and_distribution(self) -> None:
         requests, prs = self.build()
         rows = fr.week_rows(requests, prs, fr.PRICES)
@@ -260,13 +362,6 @@ class Report(Fixture):
             self.assertIn(f"| {header} |", out.getvalue())
             self.assertNotIn("Over ceiling", out.getvalue())
 
-    def json_report(self, *args: str) -> dict[str, Any]:
-        out = io.StringIO()
-        with redirect_stdout(out):
-            self.assertEqual(fr.main([*args, "--json"]), 0)
-        report: dict[str, Any] = json.loads(out.getvalue())
-        return report
-
     def test_cli_reads_every_root_and_each_may_be_a_pattern(self) -> None:
         # The report unit reads every slot's transcripts (agentNN, reviewNN) and no one else's.
         when = "2026-11-10T10:00:00Z"
@@ -303,10 +398,122 @@ class Report(Fixture):
         self.assertIn("gh pr list --state merged", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
 
+    def test_cli_pr_filter_counts_author_and_reviewer(self) -> None:
+        self.build()
+        self.write(
+            "p/r2.jsonl",
+            [
+                prompt(REVIEW_57.replace("#57", "#2")),
+                record("rv", "2026-11-11T10:00:00Z", branch="HEAD", read=1_000),
+            ],
+        )
+        prs = self.root / "prs.json"
+        prs.write_text(
+            json.dumps(
+                [
+                    {
+                        "number": 1,
+                        "headRefName": "feat/old",
+                        "mergedAt": "2026-11-04T09:00:00Z",
+                        "additions": 50,
+                        "deletions": 50,
+                    },
+                    {
+                        "number": 2,
+                        "headRefName": "feat/a",
+                        "mergedAt": "2026-11-11T09:00:00Z",
+                        "additions": 60,
+                        "deletions": 40,
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        report = self.json_report("--root", str(self.root), "--prs", str(prs), "--pr", "2")
+        self.assertEqual(report["prs"], [2])
+        self.assertEqual([w["week"] for w in report["weeks"]], ["2026-W46"])
+        week = report["weeks"][0]
+        # y1, y2 on feat/a, plus the reviewer's call on the detached head.
+        self.assertEqual((week["requests"], week["merged_prs"], week["changed_lines"]), (3, 1, 100))
+        self.assertEqual([b["branch"] for b in report["branches"]], ["feat/a", "HEAD"])
+
+    def test_cli_pr_filter_without_pr_data_warns(self) -> None:
+        self.write(
+            "p/r2.jsonl",
+            [prompt(REVIEW_57.replace("#57", "#2")), record("rv", "2026-11-11T10:00:00Z")],
+        )
+        err, out = io.StringIO(), io.StringIO()
+        with redirect_stderr(err), redirect_stdout(out):
+            code = fr.main(["--root", str(self.root), "--pr", "2", "--json"])
+        self.assertEqual(code, 0)
+        self.assertIn("reviewer calls only", err.getvalue())
+        self.assertEqual(json.loads(out.getvalue())["weeks"][0]["requests"], 1)
+
+    def test_cli_pr_filter_with_no_matching_calls_fails_cleanly(self) -> None:
+        self.build()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(fr.main(["--root", str(self.root), "--pr", "99"]), 1)
+        self.assertIn("#99", err.getvalue())
+
     def test_cli_with_no_transcripts_fails_cleanly(self) -> None:
         empty = os.path.join(self._tmp.name, "empty")
         os.mkdir(empty)
         self.assertEqual(fr.main(["--root", empty]), 1)
+
+
+class Totals(TwoWeeks):
+    def test_total_row_covers_every_week_at_once(self) -> None:
+        requests, prs = self.build()
+        total = fr.total_row(requests, prs, fr.PRICES)
+        self.assertEqual(total["week"], "Total")
+        self.assertEqual((total["requests"], total["merged_prs"]), (4, 3))
+        # x1 10_200 + x2 200_100 + y1 5_150 + y2 50_050
+        self.assertEqual(total["raw_tokens"], 265_500)
+        self.assertEqual(total["raw_per_line"], 265_500 / 300)
+        self.assertEqual(total["weighted"], 33_600 + 11_850)
+        # Contexts 10_100, 200_000, 5_100, 50_000: a median over all of them, not of weekly medians.
+        self.assertEqual(total["median_context"], 30_050)
+
+    def test_cache_read_share_of_cost_beside_share_of_tokens(self) -> None:
+        requests, prs = self.build()
+        total = fr.total_row(requests, prs, fr.PRICES)
+        # Reads 250_000 tokens at 0.1 = 25_000 of 45_450 weighted.
+        self.assertAlmostEqual(total["cache_read_spend_share"], 25_000 / 45_450)
+        self.assertAlmostEqual(total["cache_read_share"], 250_000 / 265_500)
+
+    def test_author_first_turn_leaves_out_reviewers_and_subagents(self) -> None:
+        when = "2026-11-10T10:00:00Z"
+        author = self.write("p/a.jsonl", [record("a1", when, read=20_000, write=3_000)])
+        sub = self.write("p/a/subagents/agent-x.jsonl", [record("s1", when, write=1_000)])
+        review = self.write(
+            "p/r.jsonl", [prompt(REVIEW_57), record("r1", when, branch="HEAD", write=90_000)]
+        )
+        requests = fr.read_requests([author, sub, review])
+        total = fr.total_row(requests, [], fr.PRICES)
+        self.assertEqual(total["author_first_context"], 23_000)
+        week = fr.week_rows(requests, [], fr.PRICES)[0]
+        self.assertEqual(week["author_first_context"], 23_000)
+
+    def test_cli_shows_the_total_row_and_new_columns(self) -> None:
+        self.build()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            fr.main(["--root", str(self.root), "--baseline", "2026-W45"])
+        text = out.getvalue()
+        self.assertIn("| Total |", text)
+        for header in ("Raw tokens", "Raw/line", "Reads % of cost", "Author 1st ctx"):
+            self.assertIn(header, text)
+        report = self.json_report("--root", str(self.root), "--baseline", "2026-W45")
+        self.assertEqual(report["total"]["raw_tokens"], 265_500)
+        # A total of many weeks against one baseline week's average does not compare.
+        self.assertIsNone(report["total"]["weighted_index"])
+
+    def test_total_is_indexed_per_pr_against_the_baseline(self) -> None:
+        requests, prs = self.build()
+        total = fr.total_row(requests, prs, fr.PRICES)
+        fr.add_index([*fr.week_rows(requests, prs, fr.PRICES), total], ["2026-W45"])
+        self.assertEqual(total["weighted_per_pr_index"], round(100 * (45_450 / 3) / 33_600))
 
 
 if __name__ == "__main__":
