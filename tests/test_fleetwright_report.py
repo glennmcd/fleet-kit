@@ -27,6 +27,7 @@ def record(
     write: int = 0,
     write_1h: int = 0,
     out: int = 0,
+    model: str | None = None,
 ) -> dict[str, Any]:
     usage: dict[str, Any] = {
         "input_tokens": inp,
@@ -44,7 +45,7 @@ def record(
         "requestId": rid,
         "timestamp": stamp,
         "gitBranch": branch,
-        "message": {"usage": usage},
+        "message": {"usage": usage, **({"model": model} if model else {})},
     }
 
 
@@ -514,6 +515,87 @@ class Totals(TwoWeeks):
         total = fr.total_row(requests, prs, fr.PRICES)
         fr.add_index([*fr.week_rows(requests, prs, fr.PRICES), total], ["2026-W45"])
         self.assertEqual(total["weighted_per_pr_index"], round(100 * (45_450 / 3) / 33_600))
+
+
+class Models(Fixture):
+    HAIKU, OPUS = "claude-haiku-5-5", "claude-opus-5-5"
+
+    def build(self) -> list[fr.Request]:
+        when = "2026-11-10T10:00:00Z"
+        author = self.write(
+            "p/a.jsonl",
+            [
+                record("a1", when, branch="issue/52", inp=1_000, out=200, model=self.HAIKU),
+                record("a2", when, branch="issue/52", read=10_000, model=self.HAIKU),
+            ],
+        )
+        review = self.write(
+            "p/r.jsonl",
+            [prompt(REVIEW_57), record("r1", when, branch="HEAD", inp=2_000, model=self.OPUS)],
+        )
+        return fr.read_requests([author, review])
+
+    def test_each_call_keeps_its_model(self) -> None:
+        models = {r.request_id: r.model for r in self.build()}
+        self.assertEqual(models, {"a1": self.HAIKU, "a2": self.HAIKU, "r1": self.OPUS})
+        bare = fr.read_requests([self.write("p/x.jsonl", [record("x", "2026-11-10T10:00:00Z")])])
+        self.assertEqual(bare[0].model, "")
+
+    def test_model_rate_prefers_an_exact_name_then_the_longest_part(self) -> None:
+        rates = {"haiku": 1.0, "claude-haiku-5-5": 0.8, "opus": 5.0}
+        self.assertEqual(fr.model_rate(self.HAIKU, rates), 0.8)
+        self.assertEqual(fr.model_rate("claude-haiku-4-5", rates), 1.0)
+        self.assertEqual(fr.model_rate(self.OPUS, rates), 5.0)
+        self.assertIsNone(fr.model_rate("claude-sonnet-5-5", rates))
+
+    def test_shares_are_of_weighted_tokens_without_prices(self) -> None:
+        total = fr.total_row(self.build(), [], fr.PRICES)
+        # Haiku: 1_000 + 1_000 (200 out x 5) + 1_000 (10_000 read x 0.1) = 3_000; Opus: 2_000.
+        self.assertEqual(total["models"], {self.HAIKU: 0.6, self.OPUS: 0.4})
+        self.assertIsNone(total["cost_usd"])
+
+    def test_dollars_and_shares_of_cost_with_prices(self) -> None:
+        rates = {"haiku": 1.0, "opus": 5.0}  # dollars per million fresh input tokens
+        total = fr.total_row(self.build(), [], fr.PRICES, model_prices=rates)
+        # Haiku 3_000 x $1/M = $0.003; Opus 2_000 x $5/M = $0.010.
+        self.assertAlmostEqual(total["cost_usd"], 0.013)
+        self.assertAlmostEqual(total["models"][self.HAIKU], 0.003 / 0.013)
+        rows = {r["model"]: r for r in fr.model_rows(self.build(), fr.PRICES, rates)}
+        self.assertEqual(list(rows), [self.OPUS, self.HAIKU])  # biggest share first
+        self.assertEqual((rows[self.HAIKU]["calls"], rows[self.HAIKU]["weighted"]), (2, 3_000))
+        self.assertAlmostEqual(rows[self.OPUS]["cost_usd"], 0.010)
+        self.assertAlmostEqual(rows[self.OPUS]["share"], 0.010 / 0.013)
+
+    def test_cli_shows_models_and_dollars_only_when_priced(self) -> None:
+        self.build()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            fr.main(["--root", str(self.root)])
+        text = out.getvalue()
+        self.assertIn("haiku-5-5 60%, opus-5-5 40%", text)
+        self.assertIn("## Per model", text)
+        self.assertNotIn("Cost $", text)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = fr.main(
+                ["--root", str(self.root), "--model-price", "haiku=1", "--model-price", "opus=5"]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("Cost $", out.getvalue())
+        self.assertIn("$0.01", out.getvalue())
+
+    def test_cli_refuses_to_price_some_models_and_not_others(self) -> None:
+        self.build()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = fr.main(["--root", str(self.root), "--model-price", "haiku=1"])
+        self.assertEqual(code, 2)
+        self.assertIn(self.OPUS, err.getvalue())
+
+    def test_cli_rejects_a_price_that_is_not_a_number(self) -> None:
+        self.build()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            fr.main(["--root", str(self.root), "--model-price", "haiku"])
 
 
 if __name__ == "__main__":

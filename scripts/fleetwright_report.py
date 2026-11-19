@@ -85,6 +85,7 @@ class Request:
     cache_write_1h: int
     output: int
     review_pr: int | None = None  # the PR a reviewer run was started on
+    model: str = ""  # the model id the call ran on; empty in transcripts that don't record it
 
     @property
     def cache_write(self) -> int:
@@ -144,6 +145,7 @@ def _request(record: dict[str, Any], path: str) -> Request | None:
         cache_write_5m=max(0, write - write_1h),
         cache_write_1h=write_1h,
         output=int(usage.get("output_tokens") or 0),
+        model=str(message.get("model") or ""),
     )
 
 
@@ -357,6 +359,50 @@ class _Marks:
         )
 
 
+UNKNOWN_MODEL = "(unknown)"
+
+
+def model_name(request: Request) -> str:
+    return request.model or UNKNOWN_MODEL
+
+
+def model_rate(model: str, rates: dict[str, float]) -> float | None:
+    """Dollars per million fresh input tokens: an exact name, else the longest name inside *model*.
+
+    So ``haiku=1`` prices every Haiku, and ``claude-haiku-5-5=0.8`` overrides it for one version.
+    """
+    if model in rates:
+        return rates[model]
+    for name in sorted(rates, key=len, reverse=True):
+        if name in model:
+            return rates[name]
+    return None
+
+
+def call_cost(
+    request: Request, prices: dict[str, float], model_prices: dict[str, float]
+) -> float | None:
+    rate = model_rate(model_name(request), model_prices)
+    return None if rate is None else request.weighted(prices) * rate / 1_000_000
+
+
+def _by_model(
+    calls: Iterable[Request], prices: dict[str, float], model_prices: dict[str, float] | None
+) -> dict[str, float]:
+    """Each model's dollars when priced, else its weighted tokens."""
+    spend: dict[str, float] = defaultdict(float)
+    for r in calls:
+        cost = call_cost(r, prices, model_prices) if model_prices else None
+        spend[model_name(r)] += cost if cost is not None else r.weighted(prices)
+    return spend
+
+
+def _shares(spend: dict[str, float]) -> dict[str, float]:
+    whole = sum(spend.values())
+    ordered = sorted(spend.items(), key=lambda kv: -kv[1])
+    return {name: value / whole for name, value in ordered} if whole else {}
+
+
 def _median(values: Iterable[int]) -> int | None:
     found = list(values)
     return round(statistics.median(found)) if found else None
@@ -369,8 +415,10 @@ def summary_row(
     prices: dict[str, float],
     marks: _Marks,
     ceiling: int = CEILING_TOKENS,
+    model_prices: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     weighted = sum(r.weighted(prices) for r in calls)
+    spend = _by_model(calls, prices, model_prices)
     write_5m, write_1h = prices["cache_write_5m"], prices["cache_write_1h"]
     expiry = sum(
         r.cache_write_5m * write_5m + r.cache_write_1h * write_1h
@@ -387,6 +435,8 @@ def summary_row(
         "requests": len(calls),
         "raw_tokens": raw,
         "weighted": round(weighted),
+        "cost_usd": sum(spend.values()) if model_prices else None,
+        "models": _shares(spend),
         "merged_prs": merged,
         "changed_lines": lines,
         "raw_per_pr": raw / merged if merged else None,
@@ -415,6 +465,7 @@ def week_rows(
     prices: dict[str, float],
     ceiling: int = CEILING_TOKENS,
     ttl: int = CACHE_TTL_SECS,
+    model_prices: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """One summary row per ISO week, oldest first."""
     weeks: dict[str, Week] = {}
@@ -424,7 +475,9 @@ def week_rows(
         weeks.setdefault(pr.week, Week(pr.week)).prs.append(pr)
     marks = _Marks.of(requests, ttl)
     return [
-        summary_row(name, weeks[name].requests, weeks[name].prs, prices, marks, ceiling)
+        summary_row(
+            name, weeks[name].requests, weeks[name].prs, prices, marks, ceiling, model_prices
+        )
         for name in sorted(weeks)
     ]
 
@@ -435,9 +488,37 @@ def total_row(
     prices: dict[str, float],
     ceiling: int = CEILING_TOKENS,
     ttl: int = CACHE_TTL_SECS,
+    model_prices: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """The same summary over every week at once: medians and shares over all calls, not per week."""
-    return summary_row("Total", requests, prs, prices, _Marks.of(requests, ttl), ceiling)
+    marks = _Marks.of(requests, ttl)
+    return summary_row("Total", requests, prs, prices, marks, ceiling, model_prices)
+
+
+def model_rows(
+    requests: list[Request],
+    prices: dict[str, float],
+    model_prices: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    """One row per model, biggest share first: of dollars when priced, else of weighted tokens."""
+    grouped: dict[str, list[Request]] = defaultdict(list)
+    for request in requests:
+        grouped[model_name(request)].append(request)
+    shares = _shares(_by_model(requests, prices, model_prices))
+    rows = []
+    for model, share in shares.items():
+        calls = grouped[model]
+        rows.append(
+            {
+                "model": model,
+                "calls": len(calls),
+                "raw_tokens": sum(r.raw for r in calls),
+                "weighted": round(sum(r.weighted(prices) for r in calls)),
+                "cost_usd": _by_model(calls, prices, model_prices)[model] if model_prices else None,
+                "share": share,
+            }
+        )
+    return rows
 
 
 INDEXED = ("weighted", "weighted_per_pr", "weighted_per_line")
@@ -492,6 +573,12 @@ def _fmt(value: Any, kind: str = "") -> str:
         return f"{100 * value:.1f}%"
     if kind == "int":
         return f"{round(value):,}"
+    if kind == "usd":
+        return f"${value:,.2f}"
+    if kind == "models":
+        return ", ".join(
+            f"{name.removeprefix('claude-')} {100 * share:.0f}%" for name, share in value.items()
+        )
     if isinstance(value, float):
         return f"{value:,.1f}"
     if isinstance(value, int):
@@ -512,6 +599,8 @@ WEEK_COLUMNS = [
     ("raw_tokens", "Raw tokens", ""),
     ("raw_per_line", "Raw/line", "int"),
     ("weighted", "Weighted tokens", ""),
+    ("cost_usd", "Cost $", "usd"),
+    ("models", "Models", "models"),
     ("weighted_index", "Index", ""),
     ("merged_prs", "Merged PRs", ""),
     ("weighted_per_pr_index", "Per PR idx", ""),
@@ -531,6 +620,14 @@ BRANCH_COLUMNS = [
     ("changed_lines", "Lines", ""),
     ("weighted_per_line", "Per line", ""),
 ]
+MODEL_COLUMNS = [
+    ("model", "Model", ""),
+    ("calls", "Calls", ""),
+    ("raw_tokens", "Raw tokens", ""),
+    ("weighted", "Weighted tokens", ""),
+    ("cost_usd", "Cost $", "usd"),
+    ("share", "Share", "pct"),
+]
 
 
 def render(
@@ -539,14 +636,27 @@ def render(
     top: int,
     ceiling: int = CEILING_TOKENS,
     selected: list[int] | None = None,
+    models: list[dict[str, Any]] | None = None,
+    priced: bool = False,
 ) -> str:
     label = f"{ceiling // 1000}k" if ceiling % 1000 == 0 else f"{ceiling:,}"
-    columns = [(key, title.format(ceiling=label), kind) for key, title, kind in WEEK_COLUMNS]
+
+    def shown(table: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+        return [
+            (key, title.format(ceiling=label), kind)
+            for key, title, kind in table
+            if priced or key != "cost_usd"
+        ]
+
+    basis = "dollars" if priced else "weighted tokens"
     lines = []
     if selected:
         names = ", ".join(f"#{n}" for n in selected)
         lines += [f"Only PRs {names}: their authors' and reviewers' calls.", ""]
-    lines += ["## Per week (index: 100 = baseline)", "", *_table(columns, weeks)]
+    lines += ["## Per week (index: 100 = baseline)", "", *_table(shown(WEEK_COLUMNS), weeks)]
+    lines += ["", f"Models: each model's share of {basis}."]
+    lines += ["", f"## Per model (share of {basis})", ""]
+    lines += _table(shown(MODEL_COLUMNS), models or [])
     lines += ["", f"## Top {top} branches by weighted tokens", ""]
     lines += _table(BRANCH_COLUMNS, branches[:top])
     return "\n".join(lines)
@@ -581,8 +691,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--line-cap", type=int, default=LINE_CAP)
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--price", action="append", default=[], help="kind=value override")
+    parser.add_argument(
+        "--model-price",
+        type=_model_price,
+        action="append",
+        default=[],
+        metavar="MODEL=USD",
+        help="dollars per million fresh input tokens, e.g. haiku=1 or claude-opus-5-5=5; matches "
+        "a model id exactly or by part; repeatable. Given, the report adds dollars and every "
+        "model it saw must be priced",
+    )
     parser.add_argument("--json", action="store_true", help="print JSON instead of tables")
     args = parser.parse_args(argv)
+    model_prices: dict[str, float] | None = dict(args.model_price) or None
 
     prices = dict(PRICES)
     for item in args.price:
@@ -625,8 +746,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"no calls found for PRs {names}", file=sys.stderr)
             return 1
 
-    weeks = week_rows(requests, prs, prices, args.ceiling, args.ttl)
-    total = total_row(requests, prs, prices, args.ceiling, args.ttl)
+    if model_prices:
+        unpriced = sorted({model_name(r) for r in requests} - _priced(requests, model_prices))
+        if unpriced:
+            print(
+                "fleetwright_report: no --model-price for "
+                f"{', '.join(unpriced)}; price every model or none",
+                file=sys.stderr,
+            )
+            return 2
+
+    weeks = week_rows(requests, prs, prices, args.ceiling, args.ttl, model_prices)
+    total = total_row(requests, prs, prices, args.ceiling, args.ttl, model_prices)
+    models = model_rows(requests, prices, model_prices)
     baseline = [w for w in args.baseline.split(",") if w] or [weeks[0]["week"]]
     add_index([*weeks, total], baseline)
     total["weighted_index"] = None  # a total of many weeks against one week's average says nothing
@@ -636,14 +768,42 @@ def main(argv: list[str] | None = None) -> int:
             "baseline": baseline,
             "weeks": weeks,
             "total": total,
+            "models": models,
             "branches": branches,
         }
         if selected:
             report["prs"] = selected
+        if model_prices:
+            report["model_prices"] = model_prices
         print(json.dumps(report, indent=2))
     else:
-        print(render([*weeks, total], branches, args.top, args.ceiling, selected))
+        print(
+            render(
+                [*weeks, total],
+                branches,
+                args.top,
+                args.ceiling,
+                selected,
+                models,
+                priced=bool(model_prices),
+            )
+        )
     return 0
+
+
+def _model_price(text: str) -> tuple[str, float]:
+    name, sep, value = text.partition("=")
+    try:
+        if not sep or not name:
+            raise ValueError
+        return name, float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not MODEL=USD, e.g. haiku=1") from None
+
+
+def _priced(requests: Iterable[Request], model_prices: dict[str, float]) -> set[str]:
+    names = {model_name(r) for r in requests}
+    return {n for n in names if model_rate(n, model_prices) is not None}
 
 
 if __name__ == "__main__":
