@@ -43,7 +43,7 @@ import re
 import statistics
 import sys
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import pairwise
@@ -386,14 +386,31 @@ def call_cost(
     return None if rate is None else request.weighted(prices) * rate / 1_000_000
 
 
+def role(request: Request) -> str:
+    """Who made the call: the author or reviewer run, or a subagent one of them started.
+
+    ``--model`` (FLEETWRIGHT_MODEL) sets only the run's own model; a subagent runs on the model
+    its agent definition names, so the two are told apart here.
+    """
+    who = "author" if request.review_pr is None else "reviewer"
+    return f"{who} subagent" if request.is_subagent else who
+
+
+def _spend(
+    request: Request, prices: dict[str, float], model_prices: dict[str, float] | None
+) -> float:
+    """The call's dollars when priced, else its weighted tokens."""
+    cost = call_cost(request, prices, model_prices) if model_prices else None
+    return cost if cost is not None else request.weighted(prices)
+
+
 def _by_model(
     calls: Iterable[Request], prices: dict[str, float], model_prices: dict[str, float] | None
 ) -> dict[str, float]:
     """Each model's dollars when priced, else its weighted tokens."""
     spend: dict[str, float] = defaultdict(float)
     for r in calls:
-        cost = call_cost(r, prices, model_prices) if model_prices else None
-        spend[model_name(r)] += cost if cost is not None else r.weighted(prices)
+        spend[model_name(r)] += _spend(r, prices, model_prices)
     return spend
 
 
@@ -501,21 +518,43 @@ def model_rows(
     model_prices: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """One row per model, biggest share first: of dollars when priced, else of weighted tokens."""
-    grouped: dict[str, list[Request]] = defaultdict(list)
+    return _grouped_rows(requests, prices, model_prices, ("model",), lambda r: (model_name(r),))
+
+
+def role_rows(
+    requests: list[Request],
+    prices: dict[str, float],
+    model_prices: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    """One row per role and model, biggest share first."""
+    return _grouped_rows(
+        requests, prices, model_prices, ("role", "model"), lambda r: (role(r), model_name(r))
+    )
+
+
+def _grouped_rows(
+    requests: list[Request],
+    prices: dict[str, float],
+    model_prices: dict[str, float] | None,
+    names: tuple[str, ...],
+    key: Callable[[Request], tuple[str, ...]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, ...], list[Request]] = defaultdict(list)
     for request in requests:
-        grouped[model_name(request)].append(request)
-    shares = _shares(_by_model(requests, prices, model_prices))
+        grouped[key(request)].append(request)
+    spend = {k: sum(_spend(r, prices, model_prices) for r in calls) for k, calls in grouped.items()}
+    whole = sum(spend.values())
     rows = []
-    for model, share in shares.items():
-        calls = grouped[model]
+    for k in sorted(spend, key=lambda k: -spend[k]):
+        calls = grouped[k]
         rows.append(
             {
-                "model": model,
+                **dict(zip(names, k, strict=True)),
                 "calls": len(calls),
                 "raw_tokens": sum(r.raw for r in calls),
                 "weighted": round(sum(r.weighted(prices) for r in calls)),
-                "cost_usd": _by_model(calls, prices, model_prices)[model] if model_prices else None,
-                "share": share,
+                "cost_usd": spend[k] if model_prices else None,
+                "share": spend[k] / whole if whole else 0.0,
             }
         )
     return rows
@@ -628,6 +667,7 @@ MODEL_COLUMNS = [
     ("cost_usd", "Cost $", "usd"),
     ("share", "Share", "pct"),
 ]
+ROLE_COLUMNS = [("role", "Role", ""), *MODEL_COLUMNS]
 
 
 def render(
@@ -638,6 +678,7 @@ def render(
     selected: list[int] | None = None,
     models: list[dict[str, Any]] | None = None,
     priced: bool = False,
+    roles: list[dict[str, Any]] | None = None,
 ) -> str:
     label = f"{ceiling // 1000}k" if ceiling % 1000 == 0 else f"{ceiling:,}"
 
@@ -657,6 +698,12 @@ def render(
     lines += ["", f"Models: each model's share of {basis}."]
     lines += ["", f"## Per model (share of {basis})", ""]
     lines += _table(shown(MODEL_COLUMNS), models or [])
+    lines += ["", f"## Per role and model (share of {basis})", ""]
+    lines += _table(shown(ROLE_COLUMNS), roles or [])
+    lines += [
+        "",
+        "FLEETWRIGHT_MODEL sets the author's and reviewer's own model; subagents use their own.",
+    ]
     lines += ["", f"## Top {top} branches by weighted tokens", ""]
     lines += _table(BRANCH_COLUMNS, branches[:top])
     return "\n".join(lines)
@@ -759,6 +806,7 @@ def main(argv: list[str] | None = None) -> int:
     weeks = week_rows(requests, prs, prices, args.ceiling, args.ttl, model_prices)
     total = total_row(requests, prs, prices, args.ceiling, args.ttl, model_prices)
     models = model_rows(requests, prices, model_prices)
+    roles = role_rows(requests, prices, model_prices)
     baseline = [w for w in args.baseline.split(",") if w] or [weeks[0]["week"]]
     add_index([*weeks, total], baseline)
     total["weighted_index"] = None  # a total of many weeks against one week's average says nothing
@@ -769,6 +817,7 @@ def main(argv: list[str] | None = None) -> int:
             "weeks": weeks,
             "total": total,
             "models": models,
+            "roles": roles,
             "branches": branches,
         }
         if selected:
@@ -786,6 +835,7 @@ def main(argv: list[str] | None = None) -> int:
                 selected,
                 models,
                 priced=bool(model_prices),
+                roles=roles,
             )
         )
     return 0

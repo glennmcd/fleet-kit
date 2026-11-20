@@ -598,5 +598,72 @@ class Models(Fixture):
             fr.main(["--root", str(self.root), "--model-price", "haiku"])
 
 
+class Roles(Fixture):
+    HAIKU, OPUS = Models.HAIKU, Models.OPUS
+
+    def build(self) -> list[fr.Request]:
+        when = "2026-11-10T10:00:00Z"
+        paths = [
+            self.write(
+                "p/a.jsonl", [record("a1", when, branch="issue/52", inp=3_000, model=self.HAIKU)]
+            ),
+            # The author's subagent ran on another model than the author: --model is not passed on.
+            self.write(
+                "p/a/subagents/agent-x.jsonl",
+                [record("a2", when, branch="issue/52", inp=1_000, model=self.OPUS)],
+            ),
+            self.write(
+                "p/r.jsonl",
+                [prompt(REVIEW_57), record("r1", when, branch="HEAD", inp=4_000, model=self.OPUS)],
+            ),
+            self.write(
+                "p/r/subagents/agent-y.jsonl",
+                [record("r2", when, branch="HEAD", inp=2_000, model=self.HAIKU)],
+            ),
+        ]
+        return fr.read_requests(paths)
+
+    def test_each_call_has_a_role(self) -> None:
+        roles = {r.request_id: fr.role(r) for r in self.build()}
+        self.assertEqual(
+            roles,
+            {"a1": "author", "a2": "author subagent", "r1": "reviewer", "r2": "reviewer subagent"},
+        )
+
+    def test_rows_split_by_role_and_model_biggest_first(self) -> None:
+        rows = fr.role_rows(self.build(), fr.PRICES)
+        self.assertEqual(
+            [(r["role"], r["model"], r["weighted"]) for r in rows],
+            [
+                ("reviewer", self.OPUS, 4_000),
+                ("author", self.HAIKU, 3_000),
+                ("reviewer subagent", self.HAIKU, 2_000),
+                ("author subagent", self.OPUS, 1_000),
+            ],
+        )
+        self.assertAlmostEqual(rows[0]["share"], 0.4)
+        self.assertIsNone(rows[0]["cost_usd"])
+
+    def test_rows_are_priced_in_dollars_when_given(self) -> None:
+        rows = fr.role_rows(self.build(), fr.PRICES, {"haiku": 1.0, "opus": 5.0})
+        # Reviewer Opus 4_000 x $5/M = $0.020 of $0.020 + $0.003 + $0.002 + $0.005 = $0.030.
+        self.assertEqual(rows[0]["role"], "reviewer")
+        self.assertAlmostEqual(rows[0]["cost_usd"], 0.020)
+        self.assertAlmostEqual(rows[0]["share"], 0.020 / 0.030)
+
+    def test_cli_prints_the_role_table_and_json(self) -> None:
+        self.build()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            fr.main(["--root", str(self.root)])
+        self.assertIn("## Per role and model", out.getvalue())
+        self.assertIn("| author subagent | claude-opus-5-5 |", out.getvalue())
+        out = io.StringIO()
+        with redirect_stdout(out):
+            fr.main(["--root", str(self.root), "--json"])
+        roles = json.loads(out.getvalue())["roles"]
+        self.assertEqual(len(roles), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
