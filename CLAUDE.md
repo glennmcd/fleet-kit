@@ -16,7 +16,10 @@ test that enforces it; if you change what an invariant covers, change its test i
 - **Nothing starts, and every tool call is refused, while the line is stopped.** Tests:
   `tests/test_fleetwright_stop.py`, `test_a_stopped_line_starts_nothing` (`tests/test_fleetwright_agent.py`).
 - **Safety hooks fail closed; cost hooks fail open.** `stop_line.py` and `write_guard.py` refuse on their own
-  error; `context_ceiling.py` and `wait_cap.py` allow. Never swap these.
+  error; `context_ceiling.py` and `wait_cap.py` allow. Never swap these. Tests:
+  `test_stop_line_fails_closed_when_it_cannot_check_the_stop_file` and
+  `test_a_cost_hook_fails_open_on_garbage_input` (`tests/test_hook_fail_modes.py`),
+  `test_run_as_a_process_it_fails_closed_on_garbage_input` (`tests/test_evasion_write_guard.py`).
 - **Secrets stay out of units, logs and the author's environment.** `agent.env` holds the model key and
   nothing else; an author's GitHub token is minted per run and revoked after; the journal masks secrets.
   Tests: `test_an_author_slot_holds_no_github_token_in_its_environment`
