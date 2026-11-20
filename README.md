@@ -13,8 +13,8 @@ installed from a directory marketplace (same setup as `cc-practices-plugin`).
 
 | File | What it does | Origin |
 |---|---|---|
-| `hooks/context_ceiling.py` | `PreToolUse`: a sub-agent past 150k tokens of context is told to hand off at its next commit; past 200k only `git`/`gh` run | agent-fleet-kit, vendored |
-| `hooks/wait_cap.py` | `PreToolUse` on Bash: a sub-agent may not wait in the foreground past the 5-minute prompt cache (270 s cap) | agent-fleet-kit, vendored |
+| `hooks/context_ceiling.py` | `PreToolUse`: a sub-agent (or, with `CONTEXT_CEILING_MAIN=1`, the session itself) past 150k tokens of context is told to hand off at its next commit; past 200k only `git`/`gh` run | agent-fleet-kit, vendored |
+| `hooks/wait_cap.py` | `PreToolUse` on Bash: a sub-agent (or, with `WAIT_CAP_MAIN=1`, the session itself) may not wait in the foreground past the 5-minute prompt cache (270 s cap) | agent-fleet-kit, vendored |
 | `scripts/session_tokens.py` | Tokens per session, one count per request | agent-fleet-kit, vendored |
 | `scripts/first_context.py` | What a session's first model call carried (system prompt, SessionStart output, CLAUDE.md, skill and tool listings), part by part, largest first | new |
 | `scripts/fleetwright_report.py` | Tokens per ISO week, per merged PR and per changed line, price-weighted, as an index against a baseline; cache-expiry share, context distribution, first-turn cost, top branches | new |
@@ -32,7 +32,9 @@ claude plugin install fleetwright@fleetwright --scope local
 ```
 
 Thresholds are environment variables: `CONTEXT_ADVISORY_TOKENS` (150000), `CONTEXT_CEILING_TOKENS`
-(200000), `WAIT_CAP_SECS` (270), `WAIT_CAP_MAIN=1` to cap the main session too.
+(200000), `CONTEXT_CEILING_MAIN=1` to hold the main session to the ceiling too, `WAIT_CAP_SECS` (270),
+`WAIT_CAP_MAIN=1` to cap the main session too. The author slots' unit sets both switches: an author is
+started as `claude -p`, so it is the main session, which both hooks otherwise skip.
 
 ### With cc-practices
 

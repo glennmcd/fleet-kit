@@ -1,5 +1,5 @@
 {
-  "description": "fleetwright: stop the line, keep writes inside the agent's clone, end sub-agents at a context ceiling; never let a sub-agent's prompt cache expire while it waits",
+  "description": "fleetwright: stop the line, keep writes inside the agent's clone, end sub-agents and author sessions at a context ceiling; never let an agent's prompt cache expire while it waits",
   "hooks": {
     "PreToolUse": [
       {

@@ -333,6 +333,10 @@ is left for a person. A reviewer checks out the pull request's head commit, deta
 `claude -p` with a fixed prompt for the kind of work (a new issue, a fix round, or cc-practices' `review-pr`
 skill), and exits with the agent's exit code. The agent runs with `--dangerously-skip-permissions`: nobody is
 there to answer a prompt, and the limits are the OS user, the unit's sandbox, Claude Code's sandbox and the two hooks.
+The author unit also sets `CONTEXT_CEILING_MAIN=1` and `WAIT_CAP_MAIN=1`: `claude -p` makes the author the
+main session, which the context ceiling and the wait cap skip otherwise. With them, an author past 150k
+tokens of context is told to hand off at its next commit, past 200k only `git` and `gh` run, and it may not
+wait in the foreground past 270 s. Review slots set neither.
 
 ### Watching an agent
 
@@ -725,8 +729,8 @@ tool call's hooks, they take 70 ms of wall time. An empty `python3` takes 16 ms,
 to each hook.
 
 One number is a lower bound. The measuring login cannot read a slot's transcripts (mode 600), so
-`context_ceiling.py` ran without one. On a slot it also reads the session's transcript, which was 200 to
-600 KB in the first runs.
+`context_ceiling.py` ran without one. On an author slot (`CONTEXT_CEILING_MAIN=1`) it also reads the
+session's transcript, at most its last 512 KB; the transcripts were 200 to 600 KB in the first runs.
 
 **Decision: no dispatcher for four author agents.** A Bash call that runs a test suite takes seconds and the
 model call around it takes longer, so 70 ms is under 1% of a step. One dispatcher process would save about

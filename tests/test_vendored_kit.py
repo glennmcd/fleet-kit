@@ -1,4 +1,5 @@
-# Vendored from https://github.com/alexander-marquardt/agent-fleet-kit (MIT). Unchanged.
+# Vendored from https://github.com/alexander-marquardt/agent-fleet-kit (MIT).
+# Changes: the main-session tests for CONTEXT_CEILING_MAIN and WAIT_CAP_MAIN. See NOTICE.md.
 """Tests on fixed transcripts and hook inputs. Run: python3 -m unittest discover tests"""
 
 from __future__ import annotations
@@ -83,6 +84,46 @@ class ContextCeiling(unittest.TestCase):
         self.assertEqual(json.loads(run.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
+class ContextCeilingMain(unittest.TestCase):
+    """CONTEXT_CEILING_MAIN=1 judges the main session too, from its own transcript."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        context_ceiling.MARKER_DIR = self.tmp
+        context_ceiling.JUDGE_MAIN = True
+        self.addCleanup(setattr, context_ceiling, "JUDGE_MAIN", False)
+
+    def payload(self, context: int, command: str = "ls", session: str = "s1") -> dict:
+        path = self.tmp / f"{session}.jsonl"
+        path.write_text(assistant("r1", 50_000) + "\n" + assistant("r2", context) + "\n")
+        return {"session_id": session, "transcript_path": str(path), "tool_name": "Bash",
+                "tool_input": {"command": command}}
+
+    def test_switched_off_the_main_session_passes(self) -> None:
+        context_ceiling.JUDGE_MAIN = False
+        self.assertIsNone(context_ceiling.decide(self.payload(210_000)))
+
+    def test_advisory_is_said_once_per_session(self) -> None:
+        first = context_ceiling.decide(self.payload(160_000))
+        self.assertIn("additionalContext", first["hookSpecificOutput"])
+        self.assertIsNone(context_ceiling.decide(self.payload(170_000)))
+        other = context_ceiling.decide(self.payload(160_000, session="s2"))
+        self.assertIn("additionalContext", other["hookSpecificOutput"])
+
+    def test_ceiling_refuses_other_tools_and_allows_a_handoff(self) -> None:
+        out = context_ceiling.decide(self.payload(210_000))
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+        handoff = 'git push origin HEAD && gh issue comment 7 --body "**Status**: partly done\nLeft: b"'
+        self.assertIsNone(context_ceiling.decide(self.payload(210_000, handoff)))
+
+    def test_hook_reads_the_switch_from_the_environment(self) -> None:
+        payload = json.dumps(self.payload(210_000))
+        env = {**os.environ, "CONTEXT_MARKER_DIR": str(self.tmp), "CONTEXT_CEILING_MAIN": "1"}
+        run = subprocess.run([sys.executable, str(ROOT / "hooks/context_ceiling.py")], input=payload,
+                             capture_output=True, text=True, env=env, check=True)
+        self.assertEqual(json.loads(run.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
 class WaitCap(unittest.TestCase):
     def call(self, **tool_input) -> dict | None:
         return wait_cap.decide({"agent_id": "a1", "tool_name": "Bash", "tool_input": tool_input})
@@ -101,6 +142,12 @@ class WaitCap(unittest.TestCase):
 
     def test_main_session_passes_by_default(self) -> None:
         self.assertIsNone(wait_cap.decide({"tool_name": "Bash", "tool_input": {"command": "sleep 900"}}))
+
+    def test_main_session_is_judged_when_switched_on(self) -> None:
+        wait_cap.JUDGE_MAIN = True
+        self.addCleanup(setattr, wait_cap, "JUDGE_MAIN", False)
+        out = wait_cap.decide({"tool_name": "Bash", "tool_input": {"command": "pytest", "timeout": 600_000}})
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 class SessionTokens(unittest.TestCase):

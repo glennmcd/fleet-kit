@@ -52,6 +52,14 @@ class Plugin(unittest.TestCase):
             text = (ROOT / "hooks" / name).read_text(encoding="utf-8")
             self.assertIn("# /// script", text.splitlines()[1])
 
+    def test_author_unit_holds_the_session_to_the_hooks(self) -> None:
+        # An author is started as `claude -p`, so it is the main session, which both hooks skip
+        # unless these are set.
+        unit_file = ROOT / "systemd/fleetwright-agent@.service"
+        unit = unit_file.read_text(encoding="utf-8").splitlines()
+        for line in ("Environment=CONTEXT_CEILING_MAIN=1", "Environment=WAIT_CAP_MAIN=1"):
+            self.assertIn(line, unit)
+
 
 if __name__ == "__main__":
     unittest.main()

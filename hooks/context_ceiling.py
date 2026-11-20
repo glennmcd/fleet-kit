@@ -3,7 +3,7 @@
 # requires-python = ">=3.9"
 # ///
 # Vendored from https://github.com/alexander-marquardt/agent-fleet-kit (MIT, (c) Alexander Marquardt).
-# Changes: this header only. See NOTICE.md.
+# Changes: this header and the CONTEXT_CEILING_MAIN switch. See NOTICE.md.
 """PreToolUse hook: a sub-agent hands off before its context gets expensive.
 
 Every model call re-sends the whole conversation, so a long-lived agent pays
@@ -12,8 +12,8 @@ the agent with a short written handoff and start a fresh one than to keep
 carrying everything it has read. A line in the prompt asking for this is a rule
 the agent has to remember; this hook makes it deterministic.
 
-For a sub-agent only (the hook input carries ``agent_id``; the main session is
-never judged) it reads the agent's current context size and:
+For a sub-agent (the hook input carries ``agent_id``) it reads the agent's
+current context size and:
 
 * below ``ADVISORY_TOKENS``: says nothing;
 * at or above ``ADVISORY_TOKENS``: allows the call and, once per agent, tells it
@@ -31,6 +31,10 @@ Code has written the agent's first reply to its transcript; the ceiling only
 matters many calls later, so nothing is lost.
 Thresholds can be set with ``CONTEXT_ADVISORY_TOKENS`` and
 ``CONTEXT_CEILING_TOKENS``.
+
+The main session is left alone unless ``CONTEXT_CEILING_MAIN=1``. Then it is
+judged the same way, from the session's own transcript. Set it where each agent
+is a main session of its own, as a headless ``claude -p`` run is.
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ TAIL_BYTES = 512 * 1024
 HANDOFF_COMMANDS = {"git", "gh"}
 SEPARATORS = {"&&", "||", ";"}
 MARKER_DIR = Path(os.environ.get("CONTEXT_MARKER_DIR", tempfile.gettempdir()))
+JUDGE_MAIN = os.environ.get("CONTEXT_CEILING_MAIN") == "1"
 
 HANDOFF_STEPS = (
     "Hand off now: commit and push your work, post a short handoff (what is done, "
@@ -57,7 +62,8 @@ HANDOFF_STEPS = (
 
 
 def transcript_for(payload: dict) -> Path | None:
-    """The sub-agent's own transcript, or None for the main session.
+    """The sub-agent's own transcript; for the main session, its transcript
+    when ``JUDGE_MAIN`` is set, else None.
 
     ``transcript_path`` in the hook input is the SESSION's transcript; a
     sub-agent's records are in ``<session>/subagents/agent-<agent_id>.jsonl``.
@@ -65,8 +71,10 @@ def transcript_for(payload: dict) -> Path | None:
     if payload.get("agent_transcript_path"):
         return Path(payload["agent_transcript_path"])
     agent_id, session = payload.get("agent_id"), payload.get("transcript_path")
-    if not agent_id or not session:
+    if not session:
         return None
+    if not agent_id:
+        return Path(session) if JUDGE_MAIN else None
     session = Path(session)
     return session.parent / session.stem / "subagents" / f"agent-{agent_id}.jsonl"
 
@@ -120,6 +128,13 @@ def is_handoff_command(command: str) -> bool:
     return statements > 0
 
 
+def _who(payload: dict) -> str:
+    """The key the advisory is said once for: the sub-agent, or the main session."""
+    if payload.get("agent_id"):
+        return str(payload["agent_id"])
+    return f"main-{payload.get('session_id') or Path(str(payload.get('transcript_path'))).stem}"
+
+
 def _say_once(agent_id: str) -> bool:
     """True the first time it is called for *agent_id*."""
     marker = MARKER_DIR / f"context-advisory-{agent_id}"
@@ -152,7 +167,7 @@ def decide(payload: dict) -> dict | None:
                 ),
             }
         }
-    if context >= ADVISORY_TOKENS and _say_once(str(payload.get("agent_id"))):
+    if context >= ADVISORY_TOKENS and _say_once(_who(payload)):
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

@@ -218,6 +218,15 @@ def _slot_unit(kit: str, role: str, check: bool = False) -> str:
             "TimeoutStopSec=30\n"
         )
         install = "\n[Install]\nWantedBy=multi-user.target\n"
+    # `claude -p` makes the author the main session, which the context ceiling and the wait cap
+    # skip unless these are set. Review slots are left out until the handoff text fits a reviewer.
+    # A check keeps its slot's environment, so it gets them too.
+    hooks_env = (
+        ""
+        if review
+        else "# claude -p is the main session: hold it to the context ceiling and the wait cap.\n"
+        "Environment=CONTEXT_CEILING_MAIN=1\nEnvironment=WAIT_CAP_MAIN=1\n"
+    )
     return f"""\
 {HEADER}{intro}[Unit]
 Description={description}
@@ -234,7 +243,7 @@ Environment=FLEETWRIGHT_ROLE={role}
 Environment=FLEETWRIGHT_CLONE=/home/%i/repo
 Environment=CC_PRACTICES_UNATTENDED=1
 Environment=GH_NO_UPDATE_NOTIFIER=1
-# {kit}/bin first: its gh reads the token file at each call, so a renewed token takes effect.
+{hooks_env}# {kit}/bin first: its gh reads the token file at each call, so a renewed token takes effect.
 Environment=PATH={kit}/bin:/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Beside the clone, what the write guard allows; the sandbox allows the same (managed-settings.json).
 Environment=FLEETWRIGHT_ALLOW_WRITE={":".join(f"/home/%i/{d}" for d in HOME_WRITE)}
