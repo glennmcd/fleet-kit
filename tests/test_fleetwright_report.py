@@ -517,6 +517,16 @@ class Totals(TwoWeeks):
         self.assertEqual(total["weighted_per_pr_index"], round(100 * (45_450 / 3) / 33_600))
 
 
+def price_table(*items: str) -> fr.PriceTable:
+    return fr.price_table([fr.parse_model_price(i) for i in items], fr.PRICES)
+
+
+def opus_rates(item: str) -> fr.Rates:
+    found = fr.model_rates("claude-opus-5-5", price_table(item))
+    assert found is not None
+    return found
+
+
 class Models(Fixture):
     HAIKU, OPUS = "claude-haiku-5-5", "claude-opus-5-5"
 
@@ -541,12 +551,113 @@ class Models(Fixture):
         bare = fr.read_requests([self.write("p/x.jsonl", [record("x", "2026-11-10T10:00:00Z")])])
         self.assertEqual(bare[0].model, "")
 
-    def test_model_rate_prefers_an_exact_name_then_the_longest_part(self) -> None:
-        rates = {"haiku": 1.0, "claude-haiku-5-5": 0.8, "opus": 5.0}
-        self.assertEqual(fr.model_rate(self.HAIKU, rates), 0.8)
-        self.assertEqual(fr.model_rate("claude-haiku-4-5", rates), 1.0)
-        self.assertEqual(fr.model_rate(self.OPUS, rates), 5.0)
-        self.assertIsNone(fr.model_rate("claude-sonnet-5-5", rates))
+    def test_model_rates_prefer_an_exact_name_then_the_longest_part(self) -> None:
+        rates = price_table("haiku=1", "claude-haiku-5-5=0.8", "opus=5")
+
+        def input_rate(model: str) -> float | None:
+            found = fr.model_rates(model, rates)
+            return found.input if found else None
+
+        self.assertEqual(input_rate(self.HAIKU), 0.8)
+        self.assertEqual(input_rate("claude-haiku-4-5"), 1.0)
+        self.assertEqual(input_rate(self.OPUS), 5.0)
+        self.assertIsNone(input_rate("claude-sonnet-5-5"))
+
+    def test_one_value_prices_the_other_kinds_by_the_weights(self) -> None:
+        rates = opus_rates("opus=4")
+        self.assertEqual(
+            (rates.input, rates.cache_read, rates.cache_write_5m, rates.cache_write_1h),
+            (4.0, 0.4, 5.0, 8.0),
+        )
+        self.assertEqual(rates.output, 20.0)
+
+    def test_four_values_price_each_kind(self) -> None:
+        rates = opus_rates("opus=4:0.2:5:20")
+        self.assertEqual(
+            (rates.input, rates.cache_read, rates.cache_write_5m, rates.output),
+            (4.0, 0.2, 5.0, 20.0),
+        )
+        # The one-hour write is not given: 2x input, as the weights have it (1.6x the 5-minute).
+        self.assertAlmostEqual(rates.cache_write_1h, 8.0)
+        when = fr.parse_time("2026-11-10T10:00:00Z")
+        call = fr.Request("r", when, "t", "b", False, 1_000, 10_000, 2_000, 0, 100, model=self.OPUS)
+        cost = fr.call_cost(call, fr.PRICES, price_table("opus=4:0.2:5:20"))
+        # 1_000 x 4 + 10_000 x 0.2 + 2_000 x 5 + 100 x 20 = 18_000 per million.
+        self.assertAlmostEqual(cost or 0.0, 0.018)
+
+    def test_malformed_prices_are_refused(self) -> None:
+        import argparse
+
+        bad = (
+            "opus",
+            "=4",
+            "opus=x",
+            "opus=4:0.2",
+            "opus=4:0.2:5:20:9",
+            "opus=-1",
+            "haiku>=1",
+            "haiku>x=1",
+            "haiku>0=1",
+            ">100000=1",
+        )
+        for text in bad:
+            with self.subTest(text=text), self.assertRaises(argparse.ArgumentTypeError):
+                fr.parse_model_price(text)
+
+    def test_a_size_tier_prices_prompts_over_its_threshold(self) -> None:
+        self.assertEqual(
+            fr.parse_model_price("haiku>100000=0.5:0.05:0.625:2.5"),
+            ("haiku", 100_000, (0.5, 0.05, 0.625, 2.5)),
+        )
+        table = price_table("haiku=0.1:0.01:0.125:0.5", "haiku>100000=0.5:0.05:0.625:2.5")
+        when = fr.parse_time("2026-11-10T10:00:00Z")
+
+        def cost(read: int) -> float | None:
+            # A prompt of `read` cached tokens plus 1_000 fresh input.
+            call = fr.Request("r", when, "t", "b", False, 1_000, read, 0, 0, 0, model=self.HAIKU)
+            return fr.call_cost(call, fr.PRICES, table)
+
+        # 100_000 tokens is at the threshold, not over it: the base rates.
+        self.assertAlmostEqual(cost(99_000) or 0.0, (1_000 * 0.1 + 99_000 * 0.01) / 1e6)
+        self.assertAlmostEqual(cost(99_001) or 0.0, (1_000 * 0.5 + 99_001 * 0.05) / 1e6)
+
+    def test_a_tier_alone_leaves_smaller_prompts_unpriced(self) -> None:
+        self.build()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = fr.main(
+                [
+                    "--root",
+                    str(self.root),
+                    "--model-price",
+                    "haiku>100000=1",
+                    "--model-price",
+                    "opus=5",
+                ]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn(self.HAIKU, err.getvalue())
+
+    def test_json_echoes_tiers_as_written(self) -> None:
+        self.build()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            fr.main(
+                [
+                    "--root",
+                    str(self.root),
+                    "--json",
+                    "--model-price",
+                    "haiku=0.1:0.01:0.125:0.5",
+                    "--model-price",
+                    "haiku>100000=0.5:0.05:0.625:2.5",
+                    "--model-price",
+                    "opus=4",
+                ]
+            )
+        prices = json.loads(out.getvalue())["model_prices"]
+        self.assertEqual(sorted(prices), ["haiku", "haiku>100000", "opus"])
+        self.assertEqual(prices["haiku>100000"]["input"], 0.5)
 
     def test_shares_are_of_weighted_tokens_without_prices(self) -> None:
         total = fr.total_row(self.build(), [], fr.PRICES)
@@ -555,7 +666,7 @@ class Models(Fixture):
         self.assertIsNone(total["cost_usd"])
 
     def test_dollars_and_shares_of_cost_with_prices(self) -> None:
-        rates = {"haiku": 1.0, "opus": 5.0}  # dollars per million fresh input tokens
+        rates = price_table("haiku=1", "opus=5")  # dollars per million fresh input tokens
         total = fr.total_row(self.build(), [], fr.PRICES, model_prices=rates)
         # Haiku 3_000 x $1/M = $0.003; Opus 2_000 x $5/M = $0.010.
         self.assertAlmostEqual(total["cost_usd"], 0.013)
@@ -583,6 +694,28 @@ class Models(Fixture):
         self.assertEqual(code, 0)
         self.assertIn("Cost $", out.getvalue())
         self.assertIn("$0.01", out.getvalue())
+
+    def test_cli_takes_four_rates_and_echoes_them_in_json(self) -> None:
+        self.build()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = fr.main(
+                [
+                    "--root",
+                    str(self.root),
+                    "--json",
+                    "--model-price",
+                    "haiku=0.1",
+                    "--model-price",
+                    "opus=4:0.2:5:20",
+                ]
+            )
+        self.assertEqual(code, 0)
+        report = json.loads(out.getvalue())
+        self.assertEqual(report["model_prices"]["opus"]["cache_read"], 0.2)
+        self.assertAlmostEqual(report["model_prices"]["haiku"]["output"], 0.5)
+        # Opus 2_000 input x $4 = $0.008; Haiku 1_000 x 0.1 + 10_000 x 0.01 + 200 x 0.5 = $0.0003.
+        self.assertAlmostEqual(report["total"]["cost_usd"], 0.0083)
 
     def test_cli_refuses_to_price_some_models_and_not_others(self) -> None:
         self.build()
@@ -645,7 +778,7 @@ class Roles(Fixture):
         self.assertIsNone(rows[0]["cost_usd"])
 
     def test_rows_are_priced_in_dollars_when_given(self) -> None:
-        rows = fr.role_rows(self.build(), fr.PRICES, {"haiku": 1.0, "opus": 5.0})
+        rows = fr.role_rows(self.build(), fr.PRICES, price_table("haiku=1", "opus=5"))
         # Reviewer Opus 4_000 x $5/M = $0.020 of $0.020 + $0.003 + $0.002 + $0.005 = $0.030.
         self.assertEqual(rows[0]["role"], "reviewer")
         self.assertAlmostEqual(rows[0]["cost_usd"], 0.020)

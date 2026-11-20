@@ -44,7 +44,7 @@ import statistics
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from itertools import pairwise
 from typing import Any
@@ -366,24 +366,73 @@ def model_name(request: Request) -> str:
     return request.model or UNKNOWN_MODEL
 
 
-def model_rate(model: str, rates: dict[str, float]) -> float | None:
-    """Dollars per million fresh input tokens: an exact name, else the longest name inside *model*.
+@dataclass(frozen=True)
+class Rates:
+    """One model's dollars per million tokens of each kind."""
 
-    So ``haiku=1`` prices every Haiku, and ``claude-haiku-5-5=0.8`` overrides it for one version.
+    input: float
+    cache_read: float
+    cache_write_5m: float
+    cache_write_1h: float
+    output: float
+
+
+def make_rates(values: tuple[float, ...], prices: dict[str, float]) -> Rates:
+    """Rates from ``--model-price``: input alone, or input, cache read, 5-minute write, output.
+
+    Kinds not given follow the price weights: from input alone, every kind; the one-hour write,
+    which the four-value form leaves out, from the 5-minute write.
     """
-    if model in rates:
-        return rates[model]
-    for name in sorted(rates, key=len, reverse=True):
-        if name in model:
-            return rates[name]
-    return None
+    if len(values) == 1:
+        (usd,) = values
+        return Rates(*(usd * prices[k] / prices["input"] for k in PRICES))
+    usd, read, write_5m, output = values
+    write_1h = write_5m * prices["cache_write_1h"] / prices["cache_write_5m"]
+    return Rates(usd, read, write_5m, write_1h, output)
 
 
-def call_cost(
-    request: Request, prices: dict[str, float], model_prices: dict[str, float]
-) -> float | None:
-    rate = model_rate(model_name(request), model_prices)
-    return None if rate is None else request.weighted(prices) * rate / 1_000_000
+# Each model name's rates by prompt size: 0 is the base tier, N the rates for prompts over N tokens.
+PriceTable = dict[str, dict[int, Rates]]
+
+
+def price_table(
+    entries: Iterable[tuple[str, int, tuple[float, ...]]], prices: dict[str, float]
+) -> PriceTable:
+    table: PriceTable = defaultdict(dict)
+    for name, over, values in entries:
+        table[name][over] = make_rates(values, prices)
+    return dict(table)
+
+
+def model_rates(model: str, table: PriceTable, prompt: int = 0) -> Rates | None:
+    """The rates for a *prompt*-token call on *model*: its name's highest tier the prompt is over.
+
+    The name is *model* exactly, else the longest name inside it, so ``haiku=0.1`` prices every
+    Haiku and ``claude-haiku-5-5=...`` overrides it for one version. A prompt at or under every
+    tier given, with no base tier, has no rates.
+    """
+    name = (
+        model
+        if model in table
+        else next((n for n in sorted(table, key=len, reverse=True) if n in model), None)
+    )
+    if name is None:
+        return None
+    tiers = [over for over in table[name] if over == 0 or prompt > over]
+    return table[name][max(tiers)] if tiers else None
+
+
+def call_cost(request: Request, prices: dict[str, float], model_prices: PriceTable) -> float | None:
+    rates = model_rates(model_name(request), model_prices, request.context)
+    if rates is None:
+        return None
+    return (
+        request.input * rates.input
+        + request.cache_read * rates.cache_read
+        + request.cache_write_5m * rates.cache_write_5m
+        + request.cache_write_1h * rates.cache_write_1h
+        + request.output * rates.output
+    ) / 1_000_000
 
 
 def role(request: Request) -> str:
@@ -396,16 +445,14 @@ def role(request: Request) -> str:
     return f"{who} subagent" if request.is_subagent else who
 
 
-def _spend(
-    request: Request, prices: dict[str, float], model_prices: dict[str, float] | None
-) -> float:
+def _spend(request: Request, prices: dict[str, float], model_prices: PriceTable | None) -> float:
     """The call's dollars when priced, else its weighted tokens."""
     cost = call_cost(request, prices, model_prices) if model_prices else None
     return cost if cost is not None else request.weighted(prices)
 
 
 def _by_model(
-    calls: Iterable[Request], prices: dict[str, float], model_prices: dict[str, float] | None
+    calls: Iterable[Request], prices: dict[str, float], model_prices: PriceTable | None
 ) -> dict[str, float]:
     """Each model's dollars when priced, else its weighted tokens."""
     spend: dict[str, float] = defaultdict(float)
@@ -432,7 +479,7 @@ def summary_row(
     prices: dict[str, float],
     marks: _Marks,
     ceiling: int = CEILING_TOKENS,
-    model_prices: dict[str, float] | None = None,
+    model_prices: PriceTable | None = None,
 ) -> dict[str, Any]:
     weighted = sum(r.weighted(prices) for r in calls)
     spend = _by_model(calls, prices, model_prices)
@@ -482,7 +529,7 @@ def week_rows(
     prices: dict[str, float],
     ceiling: int = CEILING_TOKENS,
     ttl: int = CACHE_TTL_SECS,
-    model_prices: dict[str, float] | None = None,
+    model_prices: PriceTable | None = None,
 ) -> list[dict[str, Any]]:
     """One summary row per ISO week, oldest first."""
     weeks: dict[str, Week] = {}
@@ -505,7 +552,7 @@ def total_row(
     prices: dict[str, float],
     ceiling: int = CEILING_TOKENS,
     ttl: int = CACHE_TTL_SECS,
-    model_prices: dict[str, float] | None = None,
+    model_prices: PriceTable | None = None,
 ) -> dict[str, Any]:
     """The same summary over every week at once: medians and shares over all calls, not per week."""
     marks = _Marks.of(requests, ttl)
@@ -515,7 +562,7 @@ def total_row(
 def model_rows(
     requests: list[Request],
     prices: dict[str, float],
-    model_prices: dict[str, float] | None = None,
+    model_prices: PriceTable | None = None,
 ) -> list[dict[str, Any]]:
     """One row per model, biggest share first: of dollars when priced, else of weighted tokens."""
     return _grouped_rows(requests, prices, model_prices, ("model",), lambda r: (model_name(r),))
@@ -524,7 +571,7 @@ def model_rows(
 def role_rows(
     requests: list[Request],
     prices: dict[str, float],
-    model_prices: dict[str, float] | None = None,
+    model_prices: PriceTable | None = None,
 ) -> list[dict[str, Any]]:
     """One row per role and model, biggest share first."""
     return _grouped_rows(
@@ -535,7 +582,7 @@ def role_rows(
 def _grouped_rows(
     requests: list[Request],
     prices: dict[str, float],
-    model_prices: dict[str, float] | None,
+    model_prices: PriceTable | None,
     names: tuple[str, ...],
     key: Callable[[Request], tuple[str, ...]],
 ) -> list[dict[str, Any]]:
@@ -740,17 +787,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--price", action="append", default=[], help="kind=value override")
     parser.add_argument(
         "--model-price",
-        type=_model_price,
+        type=parse_model_price,
         action="append",
         default=[],
-        metavar="MODEL=USD",
-        help="dollars per million fresh input tokens, e.g. haiku=1 or claude-opus-5-5=5; matches "
-        "a model id exactly or by part; repeatable. Given, the report adds dollars and every "
-        "model it saw must be priced",
+        metavar="MODEL[>TOKENS]=INPUT[:CACHE_READ:CACHE_WRITE_5M:OUTPUT]",
+        help="dollars per million tokens, e.g. opus=4:0.2:5:20, or opus=4 to price the other "
+        "kinds by the --price weights; the 1-hour cache write follows the 5-minute one by those "
+        "weights. >TOKENS gives the rates for calls whose prompt is over that size, e.g. "
+        "haiku>100000=0.5:0.05:0.625:2.5 beside haiku=0.1:0.01:0.125:0.5. Matches a model id "
+        "exactly or by part; repeatable. Given, the report adds dollars and every call it saw "
+        "must be priced",
     )
     parser.add_argument("--json", action="store_true", help="print JSON instead of tables")
     args = parser.parse_args(argv)
-    model_prices: dict[str, float] | None = dict(args.model_price) or None
 
     prices = dict(PRICES)
     for item in args.price:
@@ -758,6 +807,7 @@ def main(argv: list[str] | None = None) -> int:
         if kind not in prices:
             parser.error(f"unknown price kind {kind!r}; one of {', '.join(prices)}")
         prices[kind] = float(value)
+    model_prices = price_table(args.model_price, prices) or None
 
     roots = args.root or [os.path.expanduser("~/.claude/projects")]
     requests = read_requests(find_transcripts(roots, args.project))
@@ -794,11 +844,17 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if model_prices:
-        unpriced = sorted({model_name(r) for r in requests} - _priced(requests, model_prices))
+        unpriced = sorted(
+            {
+                model_name(r)
+                for r in requests
+                if model_rates(model_name(r), model_prices, r.context) is None
+            }
+        )
         if unpriced:
             print(
-                "fleetwright_report: no --model-price for "
-                f"{', '.join(unpriced)}; price every model or none",
+                "fleetwright_report: no --model-price covers every call of "
+                f"{', '.join(unpriced)}; price every model, at every prompt size, or none",
                 file=sys.stderr,
             )
             return 2
@@ -823,7 +879,11 @@ def main(argv: list[str] | None = None) -> int:
         if selected:
             report["prs"] = selected
         if model_prices:
-            report["model_prices"] = model_prices
+            report["model_prices"] = {
+                name if over == 0 else f"{name}>{over}": asdict(rates)
+                for name, tiers in model_prices.items()
+                for over, rates in sorted(tiers.items())
+            }
         print(json.dumps(report, indent=2))
     else:
         print(
@@ -841,19 +901,27 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _model_price(text: str) -> tuple[str, float]:
-    name, sep, value = text.partition("=")
+def parse_model_price(text: str) -> tuple[str, int, tuple[float, ...]]:
+    """``MODEL[>TOKENS]=INPUT[:CACHE_READ:CACHE_WRITE_5M:OUTPUT]``, dollars per million.
+
+    Returns the model name, the prompt size the rates apply over (0 for the base rates), and the
+    rates as given.
+    """
+    key, sep, value = text.partition("=")
+    name, tier, over_text = key.partition(">")
     try:
-        if not sep or not name:
+        over = int(over_text) if tier else 0
+        values = tuple(float(v) for v in value.split(":"))
+        if not sep or not name or (tier and over <= 0):
             raise ValueError
-        return name, float(value)
+        if len(values) not in (1, 4) or min(values) < 0:
+            raise ValueError
     except ValueError:
-        raise argparse.ArgumentTypeError(f"{text!r} is not MODEL=USD, e.g. haiku=1") from None
-
-
-def _priced(requests: Iterable[Request], model_prices: dict[str, float]) -> set[str]:
-    names = {model_name(r) for r in requests}
-    return {n for n in names if model_rate(n, model_prices) is not None}
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not MODEL[>TOKENS]=INPUT[:CACHE_READ:CACHE_WRITE_5M:OUTPUT] "
+            "in dollars per million tokens, e.g. opus=4:0.2:5:20 or haiku>100000=0.5:0.05:0.625:2.5"
+        ) from None
+    return name, over, values
 
 
 if __name__ == "__main__":
