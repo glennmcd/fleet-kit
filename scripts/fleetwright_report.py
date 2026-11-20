@@ -461,6 +461,25 @@ def _by_model(
     return spend
 
 
+def _read_share(
+    calls: list[Request],
+    reads: int,
+    weighted: float,
+    spend: dict[str, float],
+    prices: dict[str, float],
+    model_prices: PriceTable | None,
+) -> float:
+    """Cache reads' share of the cost: of dollars when priced, else of weighted tokens."""
+    if not model_prices:
+        return reads * prices["cache_read"] / weighted if weighted else 0.0
+    cost = sum(spend.values())
+    read_cost = 0.0
+    for r in calls:
+        rates = model_rates(model_name(r), model_prices, r.context)
+        read_cost += r.cache_read * rates.cache_read / 1_000_000 if rates else 0.0
+    return read_cost / cost if cost else 0.0
+
+
 def _shares(spend: dict[str, float]) -> dict[str, float]:
     whole = sum(spend.values())
     ordered = sorted(spend.items(), key=lambda kv: -kv[1])
@@ -508,7 +527,7 @@ def summary_row(
         "weighted_per_pr": weighted / merged if merged else None,
         "weighted_per_line": weighted / lines if lines else None,
         "cache_read_share": reads / raw if raw else 0.0,
-        "cache_read_spend_share": reads * prices["cache_read"] / weighted if weighted else 0.0,
+        "cache_read_spend_share": _read_share(calls, reads, weighted, spend, prices, model_prices),
         "expiry_share": expiry / weighted if weighted else 0.0,
         "median_context": _median(contexts) or 0,
         "p90_context": percentile(contexts, 0.9),
@@ -742,7 +761,7 @@ def render(
         names = ", ".join(f"#{n}" for n in selected)
         lines += [f"Only PRs {names}: their authors' and reviewers' calls.", ""]
     lines += ["## Per week (index: 100 = baseline)", "", *_table(shown(WEEK_COLUMNS), weeks)]
-    lines += ["", f"Models: each model's share of {basis}."]
+    lines += ["", f"Models and Reads % of cost: shares of {basis}."]
     lines += ["", f"## Per model (share of {basis})", ""]
     lines += _table(shown(MODEL_COLUMNS), models or [])
     lines += ["", f"## Per role and model (share of {basis})", ""]

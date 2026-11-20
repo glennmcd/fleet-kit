@@ -1,0 +1,1 @@
+sudo uv run --script /opt/fleetwright/scripts/fleetwright_report.py --root '/home/agent[0-9][0-9]/.claude/projects' --root '/home/review[0-9][0-9]/.claude/projects' --prs prs.json --pr 74 --model-price opus=4:0.2:5:20 --model-price sonnet=2:0.2:2.5:10 --model-price haiku=0.1:0.01:0.125:0.5 --model-price 'haiku>100000=0.5:0.05:0.625:2.5'

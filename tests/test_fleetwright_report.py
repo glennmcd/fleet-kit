@@ -604,6 +604,17 @@ class Models(Fixture):
             with self.subTest(text=text), self.assertRaises(argparse.ArgumentTypeError):
                 fr.parse_model_price(text)
 
+    def test_read_share_of_cost_is_in_dollars_when_priced(self) -> None:
+        table = price_table("opus=4:0.2:5:20", "haiku=0.1:0.01:0.125:0.5")
+        total = fr.total_row(self.build(), [], fr.PRICES, model_prices=table)
+        # a1 Haiku 1_000 x 0.1 + 200 x 0.5 = 200; a2 Haiku 10_000 reads x 0.01 = 100;
+        # r1 Opus 2_000 x 4 = 8_000 (all per million). Reads: 100 of 8_300.
+        self.assertAlmostEqual(total["cost_usd"], 0.0083)
+        self.assertAlmostEqual(total["cache_read_spend_share"], 100 / 8_300)
+        # Unpriced, it stays a share of weighted tokens: 1_000 of 5_000.
+        unpriced = fr.total_row(self.build(), [], fr.PRICES)
+        self.assertAlmostEqual(unpriced["cache_read_spend_share"], 1_000 / 5_000)
+
     def test_a_size_tier_prices_prompts_over_its_threshold(self) -> None:
         self.assertEqual(
             fr.parse_model_price("haiku>100000=0.5:0.05:0.625:2.5"),
